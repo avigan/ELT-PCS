@@ -88,7 +88,6 @@ fwhm_spaxel  = 2.5    # [spaxel] ?
 ron          = 0.4    # [e-/readout] detector readout noise (assumpin Saphira-like detector)
 
 # main target parameters
-star_SpT     = 'G2'   # stellar spectral type, e.g. 'G2'
 star_mag     = 5.0    # [mag] stellar magnitude at reference wavelength
 planet_dmag  = 20.0   # [mag] companion contrast at reference wavelength
 planet_polar = 0.24   # polarization fraction of the companion
@@ -122,44 +121,19 @@ FoV_rotation *= u.deg
 telescope_area = np.pi * (Dtel / 2)**2 - np.pi * (COtel*Dtel / 2)**2
 wave_ref   = (wave_min + wave_max) / 2
 
-# based on fit by Raffaele
-zero_point = 10**(-2.1028*np.log10(wave_ref.value*1000)+8.7633)
-zero_point *= u.ph / u.s / u.AA / u.cm**2
+#%% zero-point
 
-#%% read model
-Teff = stellar_parameters(star_SpT, parameter='Teff')
-Teff = np.round(Teff/100)*100
-logg = 4.0
+# fit by Raffaele
+# zero_point = 10**(-2.1028*np.log10(wave_ref.value*1000)+8.7633)
+# zero_point *= u.ph / u.s / u.AA / u.cm**2
 
-path = Path('/Users/avigan/data/Models/Spectra/')
-
-# Vega
-vega = fits.getdata(path / 'vega_k93.fits')
-
+# Vega spectrum
+vega = fits.getdata('vega_k93.fits')
 vega_star_wave = (vega['wavelength'] * u.angstrom).to(u.nm)
 vega_star_flux = vega['flux'] * u.erg / u.s / u.cm**2 / u.angstrom
 vega_star_phot = vega_star_flux.to(u.ph / u.s / u.cm**2 / u.AA, equivalencies=u.spectral_density(vega_star_wave))
+zero_point = vega_star_phot[np.min(np.where(vega_star_wave > wave_ref)[0])]
 
-# model
-file = path / f'Husser-2013/HiResFITS/PHOENIX-ACES-AGSS-COND-2011/Z-0.0/lte{Teff:05.0f}-{logg:4.2f}-0.0.PHOENIX-ACES-AGSS-COND-2011-HiRes.fits.gz'
-
-data = fits.getdata(file.parent / '../../WAVE_PHOENIX-ACES-AGSS-COND-2011.fits')
-star_wave = data / 10     # Angstrom --> nm
-
-data = fits.getdata(file)
-star_flux = data * 1e-7   # erg/s/cm2/cm --> W/m^2/µm
-
-star_wave = star_wave * u.nm
-star_flux = star_flux * u.W / u.m**2 / u.micron
-
-star_phot = star_flux.to(u.ph / u.s / u.cm**2 / u.AA, equivalencies=u.spectral_density(star_wave))
-
-ref_vega = vega_star_phot[np.min(np.where(vega_star_wave > wave_ref)[0])]
-ref_star = star_phot[np.min(np.where(star_wave > wave_ref)[0])]
-
-star_phot = star_phot / ref_star * ref_vega
-
-stop
 #%%
 channel_width = (wave_max - wave_min) / (2 * R)
 nchannels     = (wave_max - wave_min) / channel_width
