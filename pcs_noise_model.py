@@ -88,18 +88,18 @@ fwhm_spaxel  = 2.5    # [spaxel] ?
 ron          = 0.4    # [e-/readout] detector readout noise (assumpin Saphira-like detector)
 
 # main target parameters
-star_mag     = 5.0    # [mag] stellar magnitude at reference wavelength
+star_mag     = 5.0    # [mag] stellar magnitude at reference wavelength (Vega)
 planet_dmag  = 20.0   # [mag] companion contrast at reference wavelength
 planet_polar = 0.24   # polarization fraction of the companion
 
 # observation parameters
 Tint         = 3600   # [s] total integration time
-DIT          = 600    # [s] detector integration time of individual exposures
+DIT          = 60     # [s] detector integration time of individual exposures
 FoV_rotation = 45     # [deg] field-of-view rotation during the observation
 
 # data analysis
-asdi_gain = 10
-mm_gain   = 100
+asdi_gain   = 1000
+mm_fraction = 0.05
 
 #%% apply units
 Dtel         *= u.m
@@ -124,21 +124,24 @@ wave_ref   = (wave_min + wave_max) / 2
 #%% zero-point
 
 # fit by Raffaele
-# zero_point = 10**(-2.1028*np.log10(wave_ref.value*1000)+8.7633)
-# zero_point *= u.ph / u.s / u.AA / u.cm**2
+zero_point = 10**(-2.1028*np.log10(wave_ref.value*1000)+8.7633)
+zero_point *= u.ph / u.s / u.AA / u.cm**2
 
 # Vega spectrum
-vega = fits.getdata('vega_k93.fits')
-vega_star_wave = (vega['wavelength'] * u.angstrom).to(u.nm)
-vega_star_flux = vega['flux'] * u.erg / u.s / u.cm**2 / u.angstrom
-vega_star_phot = vega_star_flux.to(u.ph / u.s / u.cm**2 / u.AA, equivalencies=u.spectral_density(vega_star_wave))
-zero_point = vega_star_phot[np.min(np.where(vega_star_wave > wave_ref)[0])]
+# vega = fits.getdata('vega_k93.fits')
+# vega_star_wave = (vega['wavelength'] * u.angstrom).to(u.nm)
+# vega_star_flux = vega['flux'] * u.erg / u.s / u.cm**2 / u.angstrom
+# vega_star_phot = vega_star_flux.to(u.ph / u.s / u.cm**2 / u.AA, equivalencies=u.spectral_density(vega_star_wave))
+# zero_point = vega_star_phot[np.min(np.where(vega_star_wave > wave_ref)[0])]
 
 #%%
-channel_width = (wave_max - wave_min) / (2 * R)
+channel_width = wave_ref / (2 * R)
 nchannels     = (wave_max - wave_min) / channel_width
 
 loD_ref = wave_ref / Dtel * 180 / np.pi * 3600
+
+ifu_radius = 32*loD_ref
+iwa        = coro_iwa * loD_ref
 
 psf_peak_area = fwhm_spaxel**2
 
@@ -175,8 +178,8 @@ detected_signal_pol_planet   = detected_signal_total_planet * planet_polar
 
 cancelation = FoV_rotation * np.pi / 180 * (sep_loD - 2) / sep_loD
 
-calibration_noise = coro_profile * np.nanmax(detected_signal_total_star)
-residuals_asdi = calibration_noise / asdi_gain
+calibration_noise = detected_signal_total_star
+residuals_asdi    = calibration_noise / asdi_gain
 
 #%% noise
 photon_noise_star   = np.sqrt(detected_signal_total_star)
@@ -188,7 +191,7 @@ readout_noise = ron * np.sqrt(nchannels) * np.sqrt(det_pixel_per_channel) * np.s
 
 snr_asdi = (detected_signal_total_planet.value * cancelation) / np.sqrt(residuals_asdi.value**2 + photon_noise_star.value**2 + photon_noise_planet.value**2 + thermal_noise.value**2 + readout_noise.value**2)
 snr_asdi[snr_asdi < 0] = np.nan
-snr_mm   = (detected_signal_total_planet.value) /  np.sqrt(photon_noise_star.value**2 + photon_noise_planet.value**2 + thermal_noise.value**2 + readout_noise.value**2)
+snr_mm   = (detected_signal_total_planet.value * np.sqrt(mm_fraction)) /  np.sqrt(photon_noise_star.value**2 + photon_noise_planet.value**2 + thermal_noise.value**2 + readout_noise.value**2)
 snr_asdi[snr_asdi < 0] = np.nan
 
 #%% plots
@@ -205,9 +208,10 @@ fig.clf()
 ax = fig.add_subplot(111)
 ax.semilogy(sep_loD, detected_signal_total_star, color='b', label='Signal (star)')
 ax.semilogy(sep_loD, photon_noise_star, color='b', linestyle=':', label='Photon noise (star)')
+ax.semilogy(sep_loD, calibration_noise, color='m', linestyle=':', label='Calibration noise (star)')
 ax.semilogy(sep_loD, residuals_asdi, color='g', linestyle=':', label='ASDI residuals (star)')
 
-ax.axhline(detected_signal_total_planet.value, color='r', label='Signal (planet)')
+ax.axhline(detected_signal_total_planet.value, color='r', label=f'Signal (planet, dmag={planet_dmag.value:.1f})')
 ax.axhline(photon_noise_planet.value, color='r', linestyle=':', label='Photon noise (planet)')
 
 ax.axhline(thermal_noise.value, linestyle='--', color='0.4', label='Thermal noise')
@@ -215,16 +219,17 @@ ax.axhline(readout_noise.value, linestyle='-.', color='0.4', label='Readout nois
 
 ax.set_xlim(0, 50)
 ax.set_xlabel(r'Angular separation [$\lambda/D$]')
-# ax.set_ylim(20, 0)
+ax.set_ylim(1e0, 1e10)
 ax.set_ylabel('Signal [ph]')
 
 ax.tick_params(axis='x', which='both', top=False)
 secax = ax.secondary_xaxis('top', functions=(loD2mas, mas2loD))
 secax.set_xlabel('Angular separation [mas]')
 
-ax.legend()
+ax.legend(fontsize='small')
 
 fig.subplots_adjust(left=0.1, right=0.95, bottom=0.08, top=0.92)
+fig.savefig('signals.pdf', dpi=300)
 
 
 fig = plt.figure('SNR', figsize=(12, 10))
@@ -235,7 +240,7 @@ ax.semilogy(sep_loD, snr_mm, color='r', label='MM')
 
 ax.set_xlim(0, 50)
 ax.set_xlabel(r'Angular separation [$\lambda/D$]')
-# ax.set_ylim(20, 0)
+ax.set_ylim(0.1, 100)
 ax.set_ylabel('SNR')
 
 ax.tick_params(axis='x', which='both', top=False)
