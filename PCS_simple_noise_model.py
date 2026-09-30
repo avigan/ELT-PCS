@@ -17,7 +17,7 @@ from pathlib import Path
 
 #%% reference cases
 ref_cases_mags = [5.20, 8.50, 11.40]
-ref_cases = pd.read_csv('ref_cases_Goulas2024.csv', index_col=0)
+ref_cases = pd.read_csv('pcs/data/ref_cases_Goulas2024.csv', index_col=0)
 # ref_cases = pd.read_csv('ref_cases_Raffaele.csv', index_col=0)
 
 def xao_psf(star_mag):
@@ -50,7 +50,7 @@ def xao_psf(star_mag):
 
     return sep, dmag
 
-stellar_params = pd.read_csv('main_sequence_stars.csv')
+stellar_params = pd.read_csv('pcs/data/main_sequence_stars.csv')
 
 def stellar_parameters(SpT, parameter='Teff'):
     try:
@@ -85,7 +85,7 @@ temperature  = -50    # [°C] instrument temperature (SPHERE/IFS)
 pix_res_spatial  = 3  # [pix] number of spatial pixels across a resolution element
 pix_res_spectral = 1  # [pix] number of spectral pixels along a resolution element
 fwhm_spaxel  = 2.5    # [spaxel] ?
-ron          = 0.4    # [e-/readout] detector readout noise (assumpin Saphira-like detector)
+ron          = 0.4    # [e-/readout] detector readout noise (assuming Saphira-like detector)
 
 # main target parameters
 star_mag     = 5.0    # [mag] stellar magnitude at reference wavelength (Vega)
@@ -208,7 +208,7 @@ fig.clf()
 ax = fig.add_subplot(111)
 ax.semilogy(sep_loD, detected_signal_total_star, color='b', label='Signal (star)')
 ax.semilogy(sep_loD, photon_noise_star, color='b', linestyle=':', label='Photon noise (star)')
-ax.semilogy(sep_loD, calibration_noise, color='m', linestyle=':', label='Calibration noise (star)')
+ax.semilogy(sep_loD, calibration_noise, color='m', linestyle=':', lw=5, label='Calibration noise (star)')
 ax.semilogy(sep_loD, residuals_asdi, color='g', linestyle=':', label='ASDI residuals (star)')
 
 ax.axhline(detected_signal_total_planet.value, color='r', label=f'Signal (planet, dmag={planet_dmag.value:.1f})')
