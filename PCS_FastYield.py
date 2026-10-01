@@ -2730,7 +2730,7 @@ def main():
     dominant_noise              = np.full(N_PT, "Unknown", dtype=object)
     dominant_noise[valid_noise] = noise_labels[np.nanargmax(noise_stack[:, valid_noise], axis=0)]
 
-    yield_population_plot(table=table_type, instru=instru, thermal_model=thermal_model, reflected_model=reflected_model, exposure_time=exposure_time, band_contrast_plot=band_contrast_plot, band_regime_plot=band_regime_plot, planet_table=planet_table, SNR_plot=SNR_plot, dominant_noise=dominant_noise, SNR_thr=SNR_thr, save_dir=sim_dir, DL_mas=np.nan)
+    yield_population_plot(table=table_type, instru=instru, thermal_model=thermal_model, reflected_model=reflected_model, exposure_time=exposure_time, band_contrast_plot=band_contrast_plot, band_regime_plot=band_regime_plot, planet_table=planet_table, SNR_plot=SNR_plot, dominant_noise=dominant_noise, SNR_thr=SNR_thr, save_dir=sim_dir, DL_mas=np.nan,show_golden_sample=False, show_det_regions=False, show_ptype_regions=False)
 
 
 
