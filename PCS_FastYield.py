@@ -7,7 +7,7 @@ os.environ["NUMBA_NUM_THREADS"]    = "1"
 
 # import FastYield modules
 import fastyield.config as config
-config.dpi_fig = 72
+# config.dpi_fig = 72
 
 from fastyield.config import rad2arcsec, h, c, R0_min, R0_max, lmin_bands, lmax_bands, archive_path, simulated_path, get_sim_data_path, dpi_fig
 from fastyield.utils import plot_trans_tell_tel, plot_bkg_skycalc
@@ -2197,12 +2197,10 @@ def main():
             if jpanel > 0:
                 ax.set_yticklabels([])
 
-    title  = f"ELT/{instru} detection probability corner plot"
-    title += f"\n\n assuming an {instru_type} with a Lyot coronagraph"
-    title += f"\n \n and {post_processing.replace('DI', 'differential imaging').replace('MM', 'molecular mapping')} as post-processing method"
-    title += f"\n\n for {N_PT_plot} {table_type.replace('Archive', 'known').replace('Simulated', 'simulated')} planets in {regime_label} light"
-    #title += f"\n\n for {N_PT_plot} {table_type.replace('Archive', 'known').replace('Simulated', 'simulated')} rocky planets"
-
+    title  = f"ELT/{instru} detection probability"
+    title += f"\n{exposure_time/60:.0f}hr - {instru_type} with {post_processing}"
+    title += f"\n{regime_label} light regime"
+    title += f"\n{N_PT_plot} {table_type.replace('Archive', 'known').replace('Simulated', 'simulated')} planets"
     fig.suptitle(title, fontsize=18, weight="bold", x=0.63, y=0.89)
     fig.savefig(sim_dir / f"ELT_{instru}_{instru_type}_{post_processing}_corner_plot_{table_type}_{light_regime_plot}_Pdet.png", bbox_inches="tight", dpi=dpi_fig)
     plt.show()
@@ -2302,10 +2300,8 @@ def main():
 
     # Title
     quantity_name = "detection probability gain" if gain else "detection yield"
-    title         = f"ELT/{instru} {quantity_name} in {exposure_time/60:.0f}hr for {N_PT} "
-    title        += f"{table_type.replace('Archive', 'known').replace('Simulated', 'simulated')} planets"
-    title        += f"\n\n assuming a Lyot coronagraphic {instru_type} with "
-    title        += f"{post_processing.replace('DI', 'differential imaging').replace('MM', 'molecular mapping')}"
+    title  = f"ELT/{instru} {quantity_name} in {exposure_time/60:.0f}hr - {instru_type} with {post_processing}"
+    title += f"\n{N_PT} {table_type.replace('Archive', 'known').replace('Simulated', 'simulated')} planets"
     fig.suptitle(title, fontsize=fontsize + 6, weight="bold", y=1.00)
     fig.tight_layout(h_pad=3.0, w_pad=3.0)
     fig.savefig(sim_dir / f"ELT_{instru}_{instru_type}_{post_processing}_detection_{table_type}_{light_regime_plot}_Pdet.png", bbox_inches="tight", dpi=dpi_fig)
@@ -2317,6 +2313,7 @@ def main():
     # Plot : 1D MARGINALIZED DETECTION YIELD/PROBABILITY GAIN PER PARAM, TYPE, REGIME AND BANDS
 
     ptypes_plot = ["Earth"]                      # Choose the planet types to show
+    ptypes_plot = ["Jupiter", "Saturn", "Neptune", "Earth"]
     bands_plot  = ["V", "R", "I", "Y", "J", "H", "K"] # Choose the spectral bands to show
 
     # Identify lambda0 axis (required for this plot) and identify a l0 for each considered band
@@ -2451,11 +2448,9 @@ def main():
         quantity_name = "detection yield"
     N_PT_ptypes_plot_1D = int(np.sum([N_PT_ptypes_plot[ptypes.index(ptype)] for ptype in ptypes_plot]))
     ptype_plot_label    = "+".join(ptypes_plot)
-    title  = f"ELT/{instru} {quantity_name} in {exposure_time/60:.0f}hr for {N_PT_ptypes_plot_1D} "
-    title += f"{table_type.replace('Archive', 'known').replace('Simulated', 'simulated')} {ptype_plot_label}-like planets"
-    title += f"\n\n assuming a Lyot coronagraphic {instru_type} with "
-    title += f"{post_processing.replace('DI', 'differential imaging').replace('MM', 'molecular mapping')}"
-    title += f"\n\n for the {light_regime_plot} planet-light regime"
+    title  = f"ELT/{instru} {quantity_name} in {exposure_time/60:.0f}hr - {instru_type} with {post_processing}"
+    title += f"\n{light_regime_plot} planet-light regime"
+    title += f"\n{N_PT_ptypes_plot_1D} {table_type.replace('Archive', 'known').replace('Simulated', 'simulated')} {ptype_plot_label}-like planets"
     fig.suptitle(title, fontsize=fontsize + 6, weight="bold", y=1.00)
     fig.subplots_adjust(left=0.05, right=0.85, bottom=0.05, top=0.88, wspace=0.15, hspace=0.3)
     fig.savefig(sim_dir / f"ELT_{instru}_{instru_type}_{post_processing}_detection_band_{table_type}_{light_regime_plot}_Pdet.png", bbox_inches="tight", dpi=dpi_fig)
