@@ -6,7 +6,10 @@ os.environ["NUMEXPR_NUM_THREADS"]  = "1"
 os.environ["NUMBA_NUM_THREADS"]    = "1"
 
 # import FastYield modules
-from fastyield.config import rad2arcsec, h, c, R0_min, R0_max, lmin_bands, lmax_bands, archive_path, simulated_path, get_sim_data_path
+import fastyield.config as config
+config.dpi_fig = 72
+
+from fastyield.config import rad2arcsec, h, c, R0_min, R0_max, lmin_bands, lmax_bands, archive_path, simulated_path, get_sim_data_path, dpi_fig
 from fastyield.utils import plot_trans_tell_tel, plot_bkg_skycalc
 from fastyield.get_specs import load_tell_trans, get_detector_specs
 from fastyield.FastYield import load_planet_table, get_filename_table, get_mask_planet_type, yield_population_plot, yield_heatmap_ELT
@@ -1915,7 +1918,6 @@ def main():
 
     # %%
     # Plot general parameters
-    dpi                = 72                  # Dots Per Inch
     fontsize           = 22                  # Standard fontsize
     ms                 = 15                  # Marker size
     ss                 = 400                 # Scatter size
@@ -2137,7 +2139,7 @@ def main():
     xmax       = np.array([np.nanmax(param) for param in params])
     levels     = [0.0, 0.2, 0.4, 0.6, 0.8, 1.0]
     cmap       = plt.get_cmap("plasma_r")
-    fig, axes  = plt.subplots(Ndim, Ndim, figsize=(1.6 * Ndim, 1.6*Ndim), dpi=dpi)
+    fig, axes  = plt.subplots(Ndim, Ndim, figsize=(1.6 * Ndim, 1.6*Ndim), dpi=dpi_fig)
     axes       = np.atleast_2d(axes)
     plt.subplots_adjust(wspace=0.1, hspace=0.1)
     for ipanel, idim in enumerate(plot_order):
@@ -2202,7 +2204,7 @@ def main():
     #title += f"\n\n for {N_PT_plot} {table_type.replace('Archive', 'known').replace('Simulated', 'simulated')} rocky planets"
 
     fig.suptitle(title, fontsize=18, weight="bold", x=0.63, y=0.89)
-    fig.savefig(sim_dir / f"ELT_{instru}_{instru_type}_{post_processing}_corner_plot_{table_type}_{light_regime_plot}_Pdet.png", bbox_inches="tight", dpi=dpi)
+    fig.savefig(sim_dir / f"ELT_{instru}_{instru_type}_{post_processing}_corner_plot_{table_type}_{light_regime_plot}_Pdet.png", bbox_inches="tight", dpi=dpi_fig)
     plt.show()
 
 
@@ -2211,7 +2213,7 @@ def main():
     # PLOT : 1D MARGINALIZED DETECTION YIELD/PROBABILITY GAIN PER PARAM, TYPE AND REGIME
 
     # Layout
-    fig, axes = plt.subplots(nrows, ncols, figsize=(8 * ncols, 6 * nrows), dpi=dpi, sharey=True)
+    fig, axes = plt.subplots(nrows, ncols, figsize=(8 * ncols, 6 * nrows), dpi=dpi_fig, sharey=True)
     axes      = np.atleast_2d(axes)
     for ipanel, idim in enumerate(plot_order):
         r  = ipanel // ncols
@@ -2306,7 +2308,7 @@ def main():
     title        += f"{post_processing.replace('DI', 'differential imaging').replace('MM', 'molecular mapping')}"
     fig.suptitle(title, fontsize=fontsize + 6, weight="bold", y=1.00)
     fig.tight_layout(h_pad=3.0, w_pad=3.0)
-    fig.savefig(sim_dir / f"ELT_{instru}_{instru_type}_{post_processing}_detection_{table_type}_{light_regime_plot}_Pdet.png", bbox_inches="tight", dpi=dpi)
+    fig.savefig(sim_dir / f"ELT_{instru}_{instru_type}_{post_processing}_detection_{table_type}_{light_regime_plot}_Pdet.png", bbox_inches="tight", dpi=dpi_fig)
     plt.show()
 
 
@@ -2340,7 +2342,7 @@ def main():
     cmap        = plt.get_cmap("rainbow", NbBand)
 
     # Layout
-    fig, axes = plt.subplots(nrows, ncols, figsize=(8 * ncols, 6 * nrows), dpi=dpi, sharey=True)
+    fig, axes = plt.subplots(nrows, ncols, figsize=(8 * ncols, 6 * nrows), dpi=dpi_fig, sharey=True)
     axes      = np.atleast_2d(axes)
     for ipanel, idim in enumerate(plot_order):
         r  = ipanel // ncols
@@ -2456,7 +2458,7 @@ def main():
     title += f"\n\n for the {light_regime_plot} planet-light regime"
     fig.suptitle(title, fontsize=fontsize + 6, weight="bold", y=1.00)
     fig.subplots_adjust(left=0.05, right=0.85, bottom=0.05, top=0.88, wspace=0.15, hspace=0.3)
-    fig.savefig(sim_dir / f"ELT_{instru}_{instru_type}_{post_processing}_detection_band_{table_type}_{light_regime_plot}_Pdet.png", bbox_inches="tight", dpi=dpi)
+    fig.savefig(sim_dir / f"ELT_{instru}_{instru_type}_{post_processing}_detection_band_{table_type}_{light_regime_plot}_Pdet.png", bbox_inches="tight", dpi=dpi_fig)
     plt.show()
 
 
