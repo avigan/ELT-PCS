@@ -1240,39 +1240,39 @@ def main():
     # }
 
     # imager instrument concept (global)
-    # instrument_concept = {
-    #     'instru_type': 'imager',
-    #     'postproc': 'DI',         # MM or DI
-    #     'l0_min': 0.6,            # [µm] central wavelength
-    #     'l0_max': 2.5,
-    #     'Dl_min': 0.01,           # [µm] bandwidth
-    #     'Dl_max': 0.2,
-    #     'FoV_min': 1,             # [mas] Field Of View
-    #     'FoV_max': 1_000,
-    #     'tr_min': 0.001,          # [dimensionlesss] instrument transmission
-    #     'tr_max': 0.5,
-    #     'σ_m_min': 1e-3,          # [dimensionlesss] level of residual speckles
-    #     'σ_m_max': 1e-1
-    # }
+    instrument_concept = {
+        'instru_type': 'imager',
+        'postproc': 'DI',         # MM or DI
+        'l0_min': 0.6,            # [µm] central wavelength
+        'l0_max': 2.5,
+        'Dl_min': 0.01,           # [µm] bandwidth
+        'Dl_max': 0.2,
+        'FoV_min': 1,             # [mas] Field Of View
+        'FoV_max': 1_000,
+        'tr_min': 0.001,          # [dimensionlesss] instrument transmission
+        'tr_max': 0.5,
+        'σ_m_min': 1e-3,          # [dimensionlesss] level of residual speckles
+        'σ_m_max': 1e-1
+    }
 
     # instrument concept A: High-res VIS IFU
     # (V)RI, R = 10**5, FoV ~100 mas
-    instrument_concept = {
-        'instru_type': 'IFU',
-        'postproc': 'MM',
-        'R_min': 50_000,
-        'R_max': 200_000,
-        'l0_min': 0.6,
-        'l0_max': 0.8,
-        'Nl_min': 100,
-        'Nl_max': 200_000,
-        'FoV_min': 1,
-        'FoV_max': 100*2,
-        'tr_min': 0.001,
-        'tr_max': 0.5,
-        'σ_m_min': 1e-7,
-        'σ_m_max': 1e-1
-    }
+    # instrument_concept = {
+    #     'instru_type': 'IFU',
+    #     'postproc': 'MM',
+    #     'R_min': 50_000,
+    #     'R_max': 200_000,
+    #     'l0_min': 0.6,
+    #     'l0_max': 0.8,
+    #     'Nl_min': 100,
+    #     'Nl_max': 200_000,
+    #     'FoV_min': 1,
+    #     'FoV_max': 100*2,
+    #     'tr_min': 0.001,
+    #     'tr_max': 0.5,
+    #     'σ_m_min': 1e-7,
+    #     'σ_m_max': 1e-1
+    # }
 
 
     # --- General parameters for the simulation ---
@@ -2201,7 +2201,7 @@ def main():
     title += f"\n{exposure_time/60:.0f}hr - {instru_type} with {post_processing}"
     title += f"\n{regime_label} light regime"
     title += f"\n{N_PT_plot} {table_type.replace('Archive', 'known').replace('Simulated', 'simulated')} planets"
-    fig.suptitle(title, fontsize=18, weight="bold", x=0.63, y=0.89)
+    fig.suptitle(title, fontsize=18, weight="bold", x=0.63, y=0.89, linespacing=1.6)
     fig.savefig(sim_dir / f"ELT_{instru}_{instru_type}_{post_processing}_corner_plot_{table_type}_{light_regime_plot}_Pdet.png", bbox_inches="tight", dpi=dpi_fig)
     plt.show(block=False)
 
@@ -2302,7 +2302,7 @@ def main():
     quantity_name = "detection probability gain" if gain else "detection yield"
     title  = f"ELT/{instru} {quantity_name} in {exposure_time/60:.0f}hr - {instru_type} with {post_processing}"
     title += f"\n{N_PT} {table_type.replace('Archive', 'known').replace('Simulated', 'simulated')} planets"
-    fig.suptitle(title, fontsize=fontsize + 6, weight="bold", y=1.00)
+    fig.suptitle(title, fontsize=fontsize + 6, weight="bold", y=1.00, linespacing=1.6)
     fig.tight_layout(h_pad=3.0, w_pad=3.0)
     fig.savefig(sim_dir / f"ELT_{instru}_{instru_type}_{post_processing}_detection_{table_type}_{light_regime_plot}_Pdet.png", bbox_inches="tight", dpi=dpi_fig)
     plt.show(block=False)
@@ -2312,7 +2312,6 @@ def main():
     # %%
     # Plot : 1D MARGINALIZED DETECTION YIELD/PROBABILITY GAIN PER PARAM, TYPE, REGIME AND BANDS
 
-    ptypes_plot = ["Earth"]                      # Choose the planet types to show
     ptypes_plot = ["Jupiter", "Saturn", "Neptune", "Earth"]
     bands_plot  = ["V", "R", "I", "Y", "J", "H", "K"] # Choose the spectral bands to show
 
@@ -2338,28 +2337,29 @@ def main():
     band_labels = [f"{band}\n$\\lambda_0$={l0_band:.2f} µm" for band, l0_band in zip(bands_plot, band_l0_values)]
     cmap        = plt.get_cmap("rainbow", NbBand)
 
-    # Layout
-    fig, axes = plt.subplots(nrows, ncols, figsize=(8 * ncols, 6 * nrows), dpi=dpi_fig, sharey=True)
-    axes      = np.atleast_2d(axes)
-    for ipanel, idim in enumerate(plot_order):
-        r  = ipanel // ncols
-        t  = ipanel % ncols
-        ax = axes[r, t]
-        ax.grid(which="major", linestyle="--", linewidth=0.7, alpha=0.45)
-        ax.grid(which="minor", linestyle=":",  linewidth=0.4, alpha=0.25)
-        ax.tick_params(axis="both", which="major", labelsize=fontsize)
+    # loop over the different types of planets to make one plot for each
+    for ptype in ptypes_plot:
 
-        # Compute all curves (before normalizing them to the panel maximum if gain)
-        curves = []
-        if idim == idx_l0:
-            for ptype in ptypes_plot:
+        # Layout
+        fig, axes = plt.subplots(nrows, ncols, figsize=(8 * ncols, 6 * nrows), dpi=dpi_fig, sharey=True)
+        axes      = np.atleast_2d(axes)
+        for ipanel, idim in enumerate(plot_order):
+            r  = ipanel // ncols
+            t  = ipanel % ncols
+            ax = axes[r, t]
+            ax.grid(which="major", linestyle="--", linewidth=0.7, alpha=0.45)
+            ax.grid(which="minor", linestyle=":",  linewidth=0.4, alpha=0.25)
+            ax.tick_params(axis="both", which="major", labelsize=fontsize)
+
+            # Compute all curves (before normalizing them to the panel maximum if gain)
+            curves = []
+            if idim == idx_l0:
                 ipt = ptypes.index(ptype)
                 if Pdet_ptypes_plot[ipt] is None or N_PT_ptypes_plot[ipt] == 0:
                     continue
                 Pdet_1D = reduce_hcube(hcube=Pdet_ptypes_plot[ipt], dims_to_keep=[idim], params=params, params_ranges=params_ranges, params_priors=params_priors, params_names=params_names, verbose=False)
                 curves.append((Pdet_1D, N_PT_ptypes_plot[ipt], ptype, "k"))
-        else:
-            for ptype in ptypes_plot:
+            else:
                 ipt = ptypes.index(ptype)
                 if Pdet_ptypes_plot[ipt] is None or N_PT_ptypes_plot[ipt] == 0:
                     continue
@@ -2368,93 +2368,92 @@ def main():
                     params_ranges_band[idx_l0] = (l0_band, l0_band)
                     Pdet_1D                    = reduce_hcube(hcube=Pdet_ptypes_plot[ipt], dims_to_keep=[idim], params=params, params_ranges=params_ranges_band, params_priors=params_priors, params_names=params_names, verbose=False)
                     curves.append((Pdet_1D, N_PT_ptypes_plot[ipt], ptype, cmap(iband)))
-        ymax_panel = get_panel_ymax([curve[0] for curve in curves]) if gain else None
-        for Pdet_1D, N_PT_curve, ptype, color in curves:
-            y = convert_Pdet_to_plot_quantity(Pdet_curve=Pdet_1D, N_PT=N_PT_curve, gain=gain, ymax_panel=ymax_panel)
-            ax.plot(params[idim], y, ls="-", lw=lw, c=color, marker=marker_ptypes[ptype], ms=ms, markerfacecolor="white", markeredgewidth=1.5, alpha=alpha, zorder=3)
-        if idim == idx_l0:
-            for iband, l0_band in enumerate(band_l0_values):
-                ax.axvline(l0_band, c=cmap(iband), ls="-", lw=3*lw, alpha=0.3, zorder=2)
+            ymax_panel = get_panel_ymax([curve[0] for curve in curves]) if gain else None
+            for Pdet_1D, N_PT_curve, ptype, color in curves:
+                y = convert_Pdet_to_plot_quantity(Pdet_curve=Pdet_1D, N_PT=N_PT_curve, gain=gain, ymax_panel=ymax_panel)
+                ax.plot(params[idim], y, ls="-", lw=lw, c=color, marker=marker_ptypes[ptype], ms=ms, markerfacecolor="white", markeredgewidth=1.5, alpha=alpha, zorder=3)
+            if idim == idx_l0:
+                for iband, l0_band in enumerate(band_l0_values):
+                    ax.axvline(l0_band, c=cmap(iband), ls="-", lw=3*lw, alpha=0.3, zorder=2)
 
-        # Axis formatting
-        ax.set_xlim(np.nanmin(params[idim]), np.nanmax(params[idim]))
-        if params_islog[idim]:
-            ax.set_xscale("log")
-            ax.xaxis.set_minor_locator(LogLocator(base=10.0, subs=(2, 3, 4, 5, 6, 7, 8, 9)))
-            ax.xaxis.set_minor_formatter(NullFormatter())
-        else:
-            ax.xaxis.set_minor_locator(AutoMinorLocator(2))
-        ax.set_xlabel(params_names_L[idim], fontsize=fontsize + 2, labelpad=10)
-        if t == 0:
-            if gain:
-                ax.set_ylabel("Detection probability gain [%]", fontsize=fontsize + 2, labelpad=10)
+            # Axis formatting
+            ax.set_xlim(np.nanmin(params[idim]), np.nanmax(params[idim]))
+            if params_islog[idim]:
+                ax.set_xscale("log")
+                ax.xaxis.set_minor_locator(LogLocator(base=10.0, subs=(2, 3, 4, 5, 6, 7, 8, 9)))
+                ax.xaxis.set_minor_formatter(NullFormatter())
             else:
-                ax.set_ylabel("Yield (number of planets detected)", fontsize=fontsize + 2, labelpad=10)
+                ax.xaxis.set_minor_locator(AutoMinorLocator(2))
+            ax.set_xlabel(params_names_L[idim], fontsize=fontsize + 2, labelpad=10)
+            if t == 0:
+                if gain:
+                    ax.set_ylabel("Detection probability gain [%]", fontsize=fontsize + 2, labelpad=10)
+                else:
+                    ax.set_ylabel("Yield (number of planets detected)", fontsize=fontsize + 2, labelpad=10)
+            else:
+                ax.tick_params(labelleft=False)
+
+            # Planet-type legend
+            # if ipanel == 0:
+            #     handles_ptype = [Line2D([], [], ls="", marker=marker_ptypes[ptype], ms=ms, markerfacecolor="white", markeredgewidth=1.5, color="k", label=label_ptypes[ptype]) for ptype in ptypes_plot]
+            #     leg_ptype     = ax.legend(handles=handles_ptype, fontsize=fontsize + 2, loc="upper right", frameon=True, edgecolor="gray", facecolor="white", title="Planet type", title_fontsize=fontsize + 4)
+            #     ax.add_artist(leg_ptype)
+
+            # Systematics budget with JWST/MIRI/MRS ~ 1%.
+            if params_names[idim] == "sigma_m [%]" and post_processing == "MM":
+                x0 = 1.0 # [%]
+                ax.axvline(x0, c="k", ls="--", lw=lw)
+                ax.annotate("JWST/MIRI/MRS", xy=(x0, 0.5), xycoords=("data", "axes fraction"), xytext=(6, 0), textcoords="offset points", rotation=270, va="center", ha="left", fontsize=fontsize+4, color="k", bbox=dict(boxstyle="round,pad=0.2", fc="white", ec="gray", alpha=0.85), zorder=5, clip_on=True)
+            if params_names[idim] == "sigma_m [%]" and post_processing == "DI":
+                x0 = 0.1  # [%] = 1e-3 in fractional units with VLT/SPHERE PACO
+                ax.axvline(x0, c="k", ls="--", lw=lw)
+                ax.annotate("Optimistic on-sky DI", xy=(x0, 0.5), xycoords=("data", "axes fraction"), xytext=(6, 0), textcoords="offset points", rotation=270, va="center", ha="left", fontsize=fontsize+4, color="k", bbox=dict(boxstyle="round,pad=0.2", fc="white", ec="gray", alpha=0.85), zorder=5, clip_on=True)
+
+            # WFE and IWA ref values
+            if params_names[idim] == "WFE [nm]":
+                x0 = WFE_ref # [nm]
+                ax.axvline(x0, c="k", ls="--", lw=lw)
+                ax.annotate("Expected WFE at Q2", xy=(x0, 0.5), xycoords=("data", "axes fraction"), xytext=(6, 0), textcoords="offset points", rotation=270, va="center", ha="left", fontsize=fontsize+4, color="k", bbox=dict(boxstyle="round,pad=0.2", fc="white", ec="gray", alpha=0.85), zorder=5, clip_on=True)
+            if params_names[idim] == "IWA [mas]":
+                x0 = IWA_ref  # [mas]
+                ax.axvline(x0, c="k", ls="--", lw=lw)
+                ax.annotate("ANDES coronagraph", xy=(x0, 0.5), xycoords=("data", "axes fraction"), xytext=(6, 0), textcoords="offset points", rotation=270, va="center", ha="left", fontsize=fontsize+4, color="k", bbox=dict(boxstyle="round,pad=0.2", fc="white", ec="gray", alpha=0.85), zorder=5, clip_on=True)
+
+        # Turn off unused panels
+        for k in range(Ndim, nrows * ncols):
+            r = k // ncols
+            t = k % ncols
+            axes[r, t].axis("off")
+
+        # Common y-scale
+        axes[0, 0].set_yscale("log")
+        if gain:
+            axes[0, 0].set_ylim(1, 102)
         else:
-            ax.tick_params(labelleft=False)
+            axes[0, 0].set_ylim(0.5, None)
 
-        # Planet-type legend
-        if ipanel == 0:
-            handles_ptype = [Line2D([], [], ls="", marker=marker_ptypes[ptype], ms=ms, markerfacecolor="white", markeredgewidth=1.5, color="k", label=label_ptypes[ptype]) for ptype in ptypes_plot]
-            leg_ptype     = ax.legend(handles=handles_ptype, fontsize=fontsize + 2, loc="upper right", frameon=True, edgecolor="gray", facecolor="white", title="Planet type", title_fontsize=fontsize + 4)
-            ax.add_artist(leg_ptype)
+        # Common discrete colorbar for selected bands
+        norm = mpl.colors.BoundaryNorm(boundaries=np.arange(NbBand + 1) - 0.5, ncolors=NbBand)
+        sm   = mpl.cm.ScalarMappable(norm=norm, cmap=cmap)
+        sm.set_array([])
+        cbar = fig.colorbar(sm, ax=axes.ravel().tolist(), location="right", fraction=0.025, pad=0.05, ticks=np.arange(NbBand))
+        cbar.ax.set_yticklabels(band_labels)
+        cbar.set_label(r"Selected spectral band / fixed central wavelength $\lambda_0$", fontsize=fontsize + 2, rotation=270, labelpad=35)
+        cbar.ax.tick_params(labelsize=fontsize)
 
-        # Systematics budget with JWST/MIRI/MRS ~ 1%.
-        if params_names[idim] == "sigma_m [%]" and post_processing == "MM":
-            x0 = 1.0 # [%]
-            ax.axvline(x0, c="k", ls="--", lw=lw)
-            ax.annotate("JWST/MIRI/MRS", xy=(x0, 0.5), xycoords=("data", "axes fraction"), xytext=(6, 0), textcoords="offset points", rotation=270, va="center", ha="left", fontsize=fontsize+4, color="k", bbox=dict(boxstyle="round,pad=0.2", fc="white", ec="gray", alpha=0.85), zorder=5, clip_on=True)
-        if params_names[idim] == "sigma_m [%]" and post_processing == "DI":
-            x0 = 0.1  # [%] = 1e-3 in fractional units with VLT/SPHERE PACO
-            ax.axvline(x0, c="k", ls="--", lw=lw)
-            ax.annotate("Optimistic on-sky DI", xy=(x0, 0.5), xycoords=("data", "axes fraction"), xytext=(6, 0), textcoords="offset points", rotation=270, va="center", ha="left", fontsize=fontsize+4, color="k", bbox=dict(boxstyle="round,pad=0.2", fc="white", ec="gray", alpha=0.85), zorder=5, clip_on=True)
-
-        # WFE and IWA ref values
-        if params_names[idim] == "WFE [nm]":
-            x0 = WFE_ref # [nm]
-            ax.axvline(x0, c="k", ls="--", lw=lw)
-            ax.annotate("Expected WFE at Q2", xy=(x0, 0.5), xycoords=("data", "axes fraction"), xytext=(6, 0), textcoords="offset points", rotation=270, va="center", ha="left", fontsize=fontsize+4, color="k", bbox=dict(boxstyle="round,pad=0.2", fc="white", ec="gray", alpha=0.85), zorder=5, clip_on=True)
-        if params_names[idim] == "IWA [mas]":
-            x0 = IWA_ref  # [mas]
-            ax.axvline(x0, c="k", ls="--", lw=lw)
-            ax.annotate("ANDES coronagraph", xy=(x0, 0.5), xycoords=("data", "axes fraction"), xytext=(6, 0), textcoords="offset points", rotation=270, va="center", ha="left", fontsize=fontsize+4, color="k", bbox=dict(boxstyle="round,pad=0.2", fc="white", ec="gray", alpha=0.85), zorder=5, clip_on=True)
-
-    # Turn off unused panels
-    for k in range(Ndim, nrows * ncols):
-        r = k // ncols
-        t = k % ncols
-        axes[r, t].axis("off")
-
-    # Common y-scale
-    axes[0, 0].set_yscale("log")
-    if gain:
-        axes[0, 0].set_ylim(1, 102)
-    else:
-        axes[0, 0].set_ylim(0.5, None)
-
-    # Common discrete colorbar for selected bands
-    norm = mpl.colors.BoundaryNorm(boundaries=np.arange(NbBand + 1) - 0.5, ncolors=NbBand)
-    sm   = mpl.cm.ScalarMappable(norm=norm, cmap=cmap)
-    sm.set_array([])
-    cbar = fig.colorbar(sm, ax=axes.ravel().tolist(), location="right", fraction=0.025, pad=0.05, ticks=np.arange(NbBand))
-    cbar.ax.set_yticklabels(band_labels)
-    cbar.set_label(r"Selected spectral band / fixed central wavelength $\lambda_0$", fontsize=fontsize + 2, rotation=270, labelpad=35)
-    cbar.ax.tick_params(labelsize=fontsize)
-
-    # Title
-    if gain:
-        quantity_name = "detection probability gain"
-    else:
-        quantity_name = "detection yield"
-    N_PT_ptypes_plot_1D = int(np.sum([N_PT_ptypes_plot[ptypes.index(ptype)] for ptype in ptypes_plot]))
-    ptype_plot_label    = "+".join(ptypes_plot)
-    title  = f"ELT/{instru} {quantity_name} in {exposure_time/60:.0f}hr - {instru_type} with {post_processing}"
-    title += f"\n{light_regime_plot} planet-light regime"
-    title += f"\n{N_PT_ptypes_plot_1D} {table_type.replace('Archive', 'known').replace('Simulated', 'simulated')} {ptype_plot_label}-like planets"
-    fig.suptitle(title, fontsize=fontsize + 6, weight="bold", y=1.00)
-    fig.subplots_adjust(left=0.05, right=0.85, bottom=0.05, top=0.88, wspace=0.15, hspace=0.3)
-    fig.savefig(sim_dir / f"ELT_{instru}_{instru_type}_{post_processing}_detection_band_{table_type}_{light_regime_plot}_Pdet.png", bbox_inches="tight", dpi=dpi_fig)
-    plt.show(block=False)
+        # Title
+        if gain:
+            quantity_name = "detection probability gain"
+        else:
+            quantity_name = "detection yield"
+        N_PT_ptype_plot_1D = int(N_PT_ptypes_plot[ptypes.index(ptype)])
+        title  = f"ELT/{instru} {quantity_name} in {exposure_time/60:.0f}hr - {instru_type} with {post_processing}"
+        title += f"\n{light_regime_plot} planet-light regime"
+        title += f"\n{N_PT_ptype_plot_1D} {table_type.replace('Archive', 'known').replace('Simulated', 'simulated')} {ptype}-like planets"
+        fig.suptitle(title, fontsize=fontsize + 6, weight="bold", y=1.00, linespacing=1.6)
+        fig.subplots_adjust(left=0.05, right=0.85, bottom=0.05, top=0.88, wspace=0.15, hspace=0.3)
+        fig.savefig(sim_dir / f"ELT_{instru}_{instru_type}_{post_processing}_detection_band_{table_type}_{light_regime_plot}_{ptype}_Pdet.png", bbox_inches="tight", dpi=dpi_fig)
+        plt.show(block=False)
 
 
 
