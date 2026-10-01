@@ -1278,7 +1278,7 @@ def main():
     strehl             = "Q2"                                  # Sky atmospheric condition (1st quartile, 2nd, etc.)
     SNR_thr            = 5                                     # Detection threshold
     exposure_time      = 10*60                                 # Total exposure time per planet [mn]
-    force_new_calc     = True                                 # Forcing new simulations calculations
+    force_new_calc     = False                                 # Forcing new simulations calculations
     thermal_model      = "auto"                                # Model for the thermal spectrum of the planet ("auto", "None", "BT-Settl", "Exo-REM", "SONORA", "PICASO", "Saumon", etc.)
     reflected_model    = "auto"                                # Model for the albedo of the planet ("auto", "tellurics", "flat", "PICASO")
     instru_type        = instrument_concept['instru_type']     # Type of instrument ("IFU" or "imager")
@@ -1923,7 +1923,7 @@ def main():
     alpha              = 0.9                 # Opacity
     gain               = True                # True for probability gain (normalized yield), False for absolute yields
     light_regime_plot  = "thermal+reflected" # 'thermal", "reflected" or "thermal+reflected"
-    band_regime_plot   =  "H"                # Band where the thermal/reflected domination regime is splitted
+    band_regime_plot   =  "R"                # Band where the thermal/reflected domination regime is splitted
     ptypes             = ["Jupiter",                 "Saturn",                "Neptune",                 "Earth"]
     marker_ptypes      = {"Jupiter": "s",            "Saturn": "v",           "Neptune": "P",            "Earth": "o"}
     label_ptypes       = {"Jupiter": "Jupiter-like", "Saturn": "Saturn-like", "Neptune": "Neptune-like", "Earth": "Earth-like"}
@@ -2315,7 +2315,7 @@ def main():
     # Plot : 1D MARGINALIZED DETECTION YIELD/PROBABILITY GAIN PER PARAM, TYPE, REGIME AND BANDS
 
     ptypes_plot = ["Earth"]                      # Choose the planet types to show
-    bands_plot  = ["R", "I", "Y", "J", "H", "K"] # Choose the spectral bands to show
+    bands_plot  = ["V", "R", "I", "Y", "J", "H", "K"] # Choose the spectral bands to show
 
     # Identify lambda0 axis (required for this plot) and identify a l0 for each considered band
     idx_l0 = [idx for idx, param_name in enumerate(params_names) if "l0" in param_name]
@@ -2325,11 +2325,19 @@ def main():
         raise RuntimeError("Could not identify the lambda0 axis in params_names / params_names_L.")
     l0_axis_values = params[idx_l0]
     band_l0_values = np.array([(lmin_bands[band]+lmax_bands[band])/2 for band in bands_plot], dtype=float)
-    NbBand         = len(bands_plot)
-    band_labels    = [f"{band}\n$\\lambda_0$={l0_band:.2f} µm" for band, l0_band in zip(bands_plot, band_l0_values)]
-    cmap           = plt.get_cmap("rainbow", NbBand)
-    if np.any(band_l0_values < l0_axis_values[0]) or np.any(band_l0_values > l0_axis_values[-1]):
-        raise ValueError(f"At least one selected band central wavelength is outside the sampled lambda0 range [{l0_axis_values[0]:.3f}, {l0_axis_values[-1]:.3f}] µm.")
+
+    # Keep only the bands whose central wavelength is within the sampled lambda0 range
+    in_range = (band_l0_values >= l0_axis_values[0]) & (band_l0_values <= l0_axis_values[-1])
+    if not np.all(in_range):
+        dropped = [band for band, ok in zip(bands_plot, in_range) if not ok]
+        print(f"Warning: removing band(s) {dropped} from the plot (central wavelength outside the sampled lambda0 range [{l0_axis_values[0]:.3f}, {l0_axis_values[-1]:.3f}] µm).")
+        bands_plot     = [band for band, ok in zip(bands_plot, in_range) if ok]
+        band_l0_values = band_l0_values[in_range]
+    if len(bands_plot) == 0:
+        raise ValueError(f"None of the selected bands has a central wavelength within the sampled lambda0 range [{l0_axis_values[0]:.3f}, {l0_axis_values[-1]:.3f}] µm.")
+    NbBand      = len(bands_plot)
+    band_labels = [f"{band}\n$\\lambda_0$={l0_band:.2f} µm" for band, l0_band in zip(bands_plot, band_l0_values)]
+    cmap        = plt.get_cmap("rainbow", NbBand)
 
     # Layout
     fig, axes = plt.subplots(nrows, ncols, figsize=(8 * ncols, 6 * nrows), dpi=dpi, sharey=True)
@@ -2484,6 +2492,14 @@ def main():
     l0_axis_values   = np.asarray(params[idx_l0],   dtype=float)
     spec_axis_values = np.asarray(params[idx_spec], dtype=float)
     band_l0_values   = np.array([(lmin_bands[band] + lmax_bands[band]) / 2 for band in bands_plot], dtype=float)
+    in_range         = (band_l0_values >= l0_axis_values[0]) & (band_l0_values <= l0_axis_values[-1])
+    if not np.all(in_range):
+        dropped = [band for band, ok in zip(bands_plot, in_range) if not ok]
+        print(f"Warning: removing band(s) {dropped} from the heatmap (central wavelength outside the sampled lambda0 range [{l0_axis_values[0]:.3f}, {l0_axis_values[-1]:.3f}] µm).")
+        bands_plot     = [band for band, ok in zip(bands_plot, in_range) if ok]
+        band_l0_values = band_l0_values[in_range]
+    if len(bands_plot) == 0:
+        raise ValueError(f"None of the selected bands has a central wavelength within the sampled lambda0 range [{l0_axis_values[0]:.3f}, {l0_axis_values[-1]:.3f}] µm.")
     spec_values      = np.asarray(spec_plot, dtype=float)
     spec_values      = np.clip(spec_values, spec_axis_values[0], spec_axis_values[-1])
     spec_plot        = spec_values.tolist()
