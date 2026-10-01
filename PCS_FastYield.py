@@ -2203,7 +2203,7 @@ def main():
     title += f"\n{N_PT_plot} {table_type.replace('Archive', 'known').replace('Simulated', 'simulated')} planets"
     fig.suptitle(title, fontsize=18, weight="bold", x=0.63, y=0.89)
     fig.savefig(sim_dir / f"ELT_{instru}_{instru_type}_{post_processing}_corner_plot_{table_type}_{light_regime_plot}_Pdet.png", bbox_inches="tight", dpi=dpi_fig)
-    plt.show()
+    plt.show(block=False)
 
 
 
@@ -2305,7 +2305,7 @@ def main():
     fig.suptitle(title, fontsize=fontsize + 6, weight="bold", y=1.00)
     fig.tight_layout(h_pad=3.0, w_pad=3.0)
     fig.savefig(sim_dir / f"ELT_{instru}_{instru_type}_{post_processing}_detection_{table_type}_{light_regime_plot}_Pdet.png", bbox_inches="tight", dpi=dpi_fig)
-    plt.show()
+    plt.show(block=False)
 
 
 
@@ -2454,7 +2454,7 @@ def main():
     fig.suptitle(title, fontsize=fontsize + 6, weight="bold", y=1.00)
     fig.subplots_adjust(left=0.05, right=0.85, bottom=0.05, top=0.88, wspace=0.15, hspace=0.3)
     fig.savefig(sim_dir / f"ELT_{instru}_{instru_type}_{post_processing}_detection_band_{table_type}_{light_regime_plot}_Pdet.png", bbox_inches="tight", dpi=dpi_fig)
-    plt.show()
+    plt.show(block=False)
 
 
 
