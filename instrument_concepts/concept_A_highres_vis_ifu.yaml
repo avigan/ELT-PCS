@@ -1,0 +1,17 @@
+# instrument concept A: High-res VIS IFU
+# (V)RI, R = 10**5, FoV ~100 mas
+instru_type: IFU
+postproc: MM
+
+R_min: 50_000
+R_max: 200_000
+l0_min: 0.6
+l0_max: 0.8
+Nl_min: 100
+Nl_max: 200_000
+FoV_min: 1
+FoV_max: 200              # 100*2
+tr_min: 0.001
+tr_max: 0.5
+σ_m_min: 1.0e-7
+σ_m_max: 1.0e-1

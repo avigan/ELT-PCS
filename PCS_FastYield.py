@@ -40,6 +40,8 @@ import multiprocessing as mp
 from pathlib import Path
 import sys
 import gc
+import yaml
+
 
 # Parameters for multiprocessing
 nproc     = max(cpu_count()-3, 1)
@@ -54,6 +56,19 @@ chunksize = 8
 # and the Spectra/ directory.
 # set_sim_data_path("/path/to/sim_data")
 
+# -------------------------------------------------------------
+# Function to read instrument concepts from YAML files
+# -------------------------------------------------------------
+
+def load_instrument_concept(name, concept_dir=None):
+    """Load an instrument concept from instrument_concepts/<name>.yaml."""
+    concept_dir = Path(__file__).resolve().parent / "instrument_concepts" if concept_dir is None else Path(concept_dir)
+    path = concept_dir / f"{name}.yaml"
+    if not path.is_file():
+        available = sorted(p.stem for p in concept_dir.glob("*.yaml"))
+        raise FileNotFoundError(f"Instrument concept '{name}' not found in {concept_dir}. Available: {available}")
+    with open(path, "r", encoding="utf-8") as f:
+        return yaml.safe_load(f)
 
 
 # -------------------------------------------------------------
@@ -1221,59 +1236,10 @@ def main():
     psf_dir    = instru_dir / "PSF_simulations"
     sim_dir.mkdir(parents=True, exist_ok=True)
 
-    # IFU instrument concept (global)
-    # instrument_concept = {
-    #     'instru_type': 'IFU',
-    #     'postproc': 'MM',         # MM or DI
-    #     'R_min': 100,             # [dimensionlesss] spectral resolution
-    #     'R_max': 200_000,
-    #     'l0_min': 0.6,            # [µm] central wavelength
-    #     'l0_max': 2.5,
-    #     'Nl_min': 100,            # [bins] number of spectral channel
-    #     'Nl_max': 200_000,
-    #     'FoV_min': 1,             # [mas] Field Of View
-    #     'FoV_max': 2_000,
-    #     'tr_min': 0.001,          # [dimensionlesss] instrument transmission
-    #     'tr_max': 0.5,
-    #     'σ_m_min': 1e-7,          # [dimensionlesss] level of residual systematics
-    #     'σ_m_max': 1e-1
-    # }
-
-    # imager instrument concept (global)
-    instrument_concept = {
-        'instru_type': 'imager',
-        'postproc': 'DI',         # MM or DI
-        'l0_min': 0.6,            # [µm] central wavelength
-        'l0_max': 2.5,
-        'Dl_min': 0.01,           # [µm] bandwidth
-        'Dl_max': 0.2,
-        'FoV_min': 1,             # [mas] Field Of View
-        'FoV_max': 1_000,
-        'tr_min': 0.001,          # [dimensionlesss] instrument transmission
-        'tr_max': 0.5,
-        'σ_m_min': 1e-3,          # [dimensionlesss] level of residual speckles
-        'σ_m_max': 1e-1
-    }
-
-    # instrument concept A: High-res VIS IFU
-    # (V)RI, R = 10**5, FoV ~100 mas
-    # instrument_concept = {
-    #     'instru_type': 'IFU',
-    #     'postproc': 'MM',
-    #     'R_min': 50_000,
-    #     'R_max': 200_000,
-    #     'l0_min': 0.6,
-    #     'l0_max': 0.8,
-    #     'Nl_min': 100,
-    #     'Nl_max': 200_000,
-    #     'FoV_min': 1,
-    #     'FoV_max': 100*2,
-    #     'tr_min': 0.001,
-    #     'tr_max': 0.5,
-    #     'σ_m_min': 1e-7,
-    #     'σ_m_max': 1e-1
-    # }
-
+    # --- Instrument concept ---
+    # One YAML file per concept in instrument_concepts/ (ifu_global, imager_global, concept_A_highres_vis_ifu, ...)
+    concept_name       = "imager_global"
+    instrument_concept = load_instrument_concept(concept_name)
 
     # --- General parameters for the simulation ---
     coronagraph        = "LYOT"                                # Coronagraph config

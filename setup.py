@@ -26,7 +26,7 @@ setup(
     keywords = 'spectroscopy high-contrast exoplanet elt pcs',
     packages = ['pcs'],
     install_requires = [
-        'numpy', 'scipy', 'astropy', 'matplotlib', 'pandas'
+        'numpy', 'scipy', 'astropy', 'matplotlib', 'pandas', 'pyyaml'
     ],
     include_package_data = True,
     package_data = {
