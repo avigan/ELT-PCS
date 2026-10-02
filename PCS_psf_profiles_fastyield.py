@@ -1,4 +1,5 @@
 # import FastYield modules
+import fastyield as fy
 from fastyield.config import rad2arcsec
 from fastyield.utils import interp_extrap_sep, build_PSF_grid, plot_profiles, add_if_necessary
 
@@ -181,7 +182,7 @@ def get_total_flux_from_PSF_profile_density(separation, PSF_profile_density_1D):
         raise ValueError("separation must be sorted in increasing order.")
 
     edges = radial_centers_to_edges(r)
-    
+
     area = np.pi * (edges[1:]**2 - edges[:-1]**2)
 
     total_flux = np.nansum(I * area)
@@ -195,7 +196,7 @@ def get_total_flux_from_PSF_profile_density(separation, PSF_profile_density_1D):
 instru        = "PCS"
 strehl        = "Q2"
 apodizer      = "NO_SP"
-coronagraphs  = [None, "LYOT"] 
+coronagraphs  = [None, "LYOT"]
 order_PSF     = 1 # 1 is the best choice
 model_PSF     = "gaussian"
 sigfactor     = None
@@ -211,15 +212,16 @@ IWA_ref   = 33.4/2 # [mas] ANDES Lyot FPM radius (cf. plot de Mamadou N'Diaye)
 
 
 # --- Retrieving PCS data ---
-PSF_profile_density_no_coro_3D = fits.getdata("data/PCS/PSF_simulations/profiles_psf_Q2.fits")        # (wave, mag_star, sep) [fraction/mas**2]      (fraction = flux without coronagraph per bin     / total flux without coronagraph) (off-axis)
-PSF_profile_density_coro_3D    = fits.getdata("data/PCS/PSF_simulations/profiles_coro_Q2.fits")       # (wave, mag_star, sep) [fraction/mas**2]      (fraction = flux with    coronagraph per bin     / total flux with    coronagraph) (on-axis)
-fraction_core_no_coro_2D       = fits.getdata("data/PCS/PSF_simulations/encircled_energy_Q2.fits")    # (wave, mag_star)      [fraction/FWHM/mas**2] (fraction = flux without coronagraph inside core / total flux without coronagraph) (off-axis)
-star_transmission_2D           = fits.getdata("data/PCS/PSF_simulations/corono_transmission_Q2.fits") # (wave, mag_star)      star coronagraphic transmission (=  total flux with coronagraph / total flux without coronagraph)         (on-axis)
+root = Path(fy.__file__).parent.parent.parent
+PSF_profile_density_no_coro_3D = fits.getdata(root / "sim_data/PCS/PSF_simulations/profiles_psf_Q2.fits")        # (wave, mag_star, sep) [fraction/mas**2]      (fraction = flux without coronagraph per bin     / total flux without coronagraph) (off-axis)
+PSF_profile_density_coro_3D    = fits.getdata(root / "sim_data/PCS/PSF_simulations/profiles_coro_Q2.fits")       # (wave, mag_star, sep) [fraction/mas**2]      (fraction = flux with    coronagraph per bin     / total flux with    coronagraph) (on-axis)
+fraction_core_no_coro_2D       = fits.getdata(root / "sim_data/PCS/PSF_simulations/encircled_energy_Q2.fits")    # (wave, mag_star)      [fraction/FWHM/mas**2] (fraction = flux without coronagraph inside core / total flux without coronagraph) (off-axis)
+star_transmission_2D           = fits.getdata(root / "sim_data/PCS/PSF_simulations/corono_transmission_Q2.fits") # (wave, mag_star)      star coronagraphic transmission (=  total flux with coronagraph / total flux without coronagraph)         (on-axis)
 
 
 
 # --- Retrieving PCS data axis ---
-PSF_header   = fits.getheader("data/PCS/PSF_simulations/profiles_coro_Q2.fits")
+PSF_header   = fits.getheader(root / "sim_data/PCS/PSF_simulations/profiles_coro_Q2.fits")
 
 # wave axis
 N_wave       = PSF_header["NAXIS3"]
@@ -345,7 +347,7 @@ for im in range(N_mag_star):
     WFE_nm_1D[im] = np.nanmedian(1e3*wave / (2*np.pi) * WFE_rad_raw)
     WFE_rad       = WFE_nm_1D[im] / (1e3*wave / (2*np.pi))
     SR_2D[:, im]  = np.exp(-WFE_rad**2)
-WFE_nm = np.nanmedian(WFE_nm_1D)            
+WFE_nm = np.nanmedian(WFE_nm_1D)
 
 cmap_mag = plt.get_cmap("inferno_r", N_mag_star)
 plt.figure(figsize=(10, 6), dpi=300)
@@ -419,7 +421,7 @@ radial_transmission_ANDES_1D_off_axis = radial_transmission_ANDES_2D[:, -1] # (w
 radial_transmission_2D_on_axis        = star_transmission_2D # (wave, mag_star)
 radial_transmission_3D                = np.zeros((N_wave, N_mag_star, N_sep))
 for im in range(N_mag_star):
-    # Anchors 
+    # Anchors
     # y0     = reference anchor after IWA stretch
     # y1     = off-axis asymptote
     # y0_new = target on-axis transmission
@@ -438,7 +440,7 @@ for im in range(N_mag_star):
     a      = (L1new - L0new) / (L1 - L0) # (wave)
     b      = L0new - a * L0              # (wave)
     radial_transmission_3D[:, im] = expit(a[:, None] * logit(radial_transmission_ANDES_2D) + b[:, None])
-    
+
 
 
 # --- INTERPOLATION AND EXTRAPOLATION ALONG SEPARATION ---
@@ -588,7 +590,7 @@ for im in tqdm(range(N_mag_star), desc="VARYING AO PERFORMANCE (r_WFE) AND CORON
     # -------------------------------------------------------------------------
     for iw in range(N_wave):
         fraction_core_coro_4D[iw] = gaussian_filter1d(fraction_core_coro_4D[iw], sigma=sigma_bins[iw], axis=2)
-    
+
     fraction_core_coro_4D = safe01(np.minimum(fraction_core_coro_4D, fraction_core_no_coro_4D))
     fraction_core_coro_4D = safe01(np.minimum.accumulate(fraction_core_coro_4D, axis=2))
     fraction_core_coro_4D = safe01(np.maximum.accumulate(fraction_core_coro_4D, axis=3))
@@ -614,8 +616,8 @@ for coronagraph in coronagraphs:
         fraction_core_5D       = fraction_core_no_coro_5D
     else:
         PSF_profile_density_5D = PSF_profile_density_coro_5D
-        fraction_core_5D       = fraction_core_coro_5D    
-    
+        fraction_core_5D       = fraction_core_coro_5D
+
     # --- PLOT ---
     idx_MAG = np.abs(mag_star - 0).argmin() # at mag_star = 0.0
     idx_IWA = np.abs(r_IWA - 1).argmin()    # at r_IWA = 1.0
@@ -628,7 +630,7 @@ for coronagraph in coronagraphs:
         else:
             rt = None
         plot_profiles(instru=instru, coronagraph=coronagraph, apodizer=apodizer, strehl=strehl, pxscale=None, sep_unit=sep_unit, size_core=size_core, wave=wave, wave_raw=None, separation=separation, PSF_profile_density_2D=psf, fraction_core_2D=fc, radial_transmission_2D=rt, type_PSF="post-AO", title_suffix=f" \n WFE = {WFE_ref*r_WFE[idx_WFE]:.1f}nm | IWA = {IWA_ref*r_IWA[idx_IWA]:.1f}mas | $m_\star$ = {mag_star[idx_MAG]:.1f}")
-    
+
     if coronagraph is not None:
         idx_MAG = np.abs(mag_star - 0).argmin() # at mag_star = 0.0
         idx_WFE = np.abs(r_WFE - 1).argmin()    # at r_WFE = 1.0
@@ -642,19 +644,19 @@ for coronagraph in coronagraphs:
                 rt = None
             plot_profiles(instru=instru, coronagraph=coronagraph, apodizer=apodizer, strehl=strehl, pxscale=None, sep_unit=sep_unit, size_core=size_core, wave=wave, wave_raw=None, separation=separation, PSF_profile_density_2D=psf, fraction_core_2D=fc, radial_transmission_2D=rt, type_PSF="post-AO", title_suffix=f" \n WFE = {WFE_ref*r_WFE[idx_WFE]:.1f}nm | IWA = {IWA_ref*r_IWA[idx_IWA]:.1f}mas | $m_\star$ = {mag_star[idx_MAG]:.1f}")
 
-    
+
 
     # --- SAVING ---
     suffix_PSF = f"{apodizer}_{coronagraph}_{strehl}_{lmin}_{lmax}_{WFE_min}_{WFE_max}_{IWA_min}_{IWA_max}_{mag_star_min}_{mag_star_max}_{sep_max}"
-    fits.writeto(f"data/{instru}/PSF_simulations/{instru}_wave_{suffix_PSF}.fits",                       wave,                   overwrite=True)
-    fits.writeto(f"data/{instru}/PSF_simulations/{instru}_WFE_{suffix_PSF}.fits",                        WFE,                    overwrite=True)
-    fits.writeto(f"data/{instru}/PSF_simulations/{instru}_IWA_{suffix_PSF}.fits",                        IWA,                    overwrite=True)
-    fits.writeto(f"data/{instru}/PSF_simulations/{instru}_mag_star_{suffix_PSF}.fits",                   mag_star,               overwrite=True)
-    fits.writeto(f"data/{instru}/PSF_simulations/{instru}_separation_{suffix_PSF}.fits",                 separation,             overwrite=True)
-    fits.writeto(f"data/{instru}/PSF_simulations/{instru}_PSF_profile_density_5D_{suffix_PSF}.fits",     PSF_profile_density_5D, overwrite=True)
-    fits.writeto(f"data/{instru}/PSF_simulations/{instru}_fraction_core_5D_{suffix_PSF}.fits",           fraction_core_5D,       overwrite=True)
+    fits.writeto(root / f"sim_data/{instru}/PSF_simulations/{instru}_wave_{suffix_PSF}.fits",                       wave,                   overwrite=True)
+    fits.writeto(root / f"sim_data/{instru}/PSF_simulations/{instru}_WFE_{suffix_PSF}.fits",                        WFE,                    overwrite=True)
+    fits.writeto(root / f"sim_data/{instru}/PSF_simulations/{instru}_IWA_{suffix_PSF}.fits",                        IWA,                    overwrite=True)
+    fits.writeto(root / f"sim_data/{instru}/PSF_simulations/{instru}_mag_star_{suffix_PSF}.fits",                   mag_star,               overwrite=True)
+    fits.writeto(root / f"sim_data/{instru}/PSF_simulations/{instru}_separation_{suffix_PSF}.fits",                 separation,             overwrite=True)
+    fits.writeto(root / f"sim_data/{instru}/PSF_simulations/{instru}_PSF_profile_density_5D_{suffix_PSF}.fits",     PSF_profile_density_5D, overwrite=True)
+    fits.writeto(root / f"sim_data/{instru}/PSF_simulations/{instru}_fraction_core_5D_{suffix_PSF}.fits",           fraction_core_5D,       overwrite=True)
     if coronagraph is not None:
-        fits.writeto(f"data/{instru}/PSF_simulations/{instru}_radial_transmission_5D_{suffix_PSF}.fits", radial_transmission_5D, overwrite=True)
+        fits.writeto(root / f"sim_data/{instru}/PSF_simulations/{instru}_radial_transmission_5D_{suffix_PSF}.fits", radial_transmission_5D, overwrite=True)
 
 
 

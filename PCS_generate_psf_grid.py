@@ -5,6 +5,7 @@ sys.path.append('/Users/avigan/Work/PCS/Code/psfsim/')
 import numpy as np
 import matplotlib.pyplot as plt
 import matplotlib.colors as colors
+import hcipy as hp
 import psfsim as ps
 import tqdm
 import pandas as pd
@@ -128,7 +129,8 @@ def generate_psf(wave, star_mag, FoV=150, sampling_factor=5, quantile='Q2'):
     return psf, total_residual, lamD
 
 #%%
-path = Path('/Users/avigan/Cloud/OSU/Work/PCS/Simulations/psfsim_data')
+# path = Path('/Users/avigan/Cloud/OSU/Work/PCS/Simulations/psfsim_data')
+path = Path('/Users/avigan/data/PCS/FastYield/sim_data/PCS/PSF_simulations/')
 
 FoV = 150*2          # [lambda/D]
 sampling_factor = 5  # oversampling factor of the PSF [px/(lambda/D)] (number of pixel per lambda/D)
@@ -229,7 +231,7 @@ with tqdm.tqdm(total=len(waves)*len(mags)) as pbar:
             plt.semilogy(p_kv2010.index.values.astype(float)/(pixel*sampling_factor), p_kv2010.values, label='Korkiakoski & Verinaud (2010)', color='k')
 
             plt.xlim(left=0, right=100)
-            plt.xlabel('Angular separation [$\lambda/D$]')
+            plt.xlabel('Angular separation [$\\lambda/D$]')
             plt.ylabel('Contrast')
             plt.title(f'mag I={mag}, wave={wave*1e9:.0f}nm')
             plt.legend(fontsize='small')
@@ -238,7 +240,6 @@ with tqdm.tqdm(total=len(waves)*len(mags)) as pbar:
             plt.savefig('pcs_psf_comparison.pdf')
 
             pbar.update()
-            stop
 
 hdr = fits.Header()
 hdr['WAVEMIN']  = (wave_min, '[m] - wavelength start')
