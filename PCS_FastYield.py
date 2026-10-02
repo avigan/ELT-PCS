@@ -1939,6 +1939,7 @@ def main():
 
     # --- Removing useless dimensions ---
     # Identify dimensions to remove (if size == 1)
+    orig_params   = params.copy()
     orig_names    = params_names.copy()
     orig_sizes    = [len(param) for param in params]
     dim_to_remove = [idim for idim, size in enumerate(orig_sizes) if size == 1]
@@ -2507,14 +2508,82 @@ def main():
     band_contrast_plot = "H"
 
     # Choose how the detection status is defined for population plots.
-    # "max"             : use the SNR at the global maximum of the Pdet hypercube.
-    # "marginalized"    : average the SNR over the parameter ranges/priors, with FoV gating.
-    snr_population_mode = "marginalized"
+    # "max"          : use the SNR at the global maximum of the Pdet hypercube.
+    # "marginalized" : use the default params_ranges.
+    # "personalized" : use custom parameter ranges defined below.
+    snr_population_mode = "personalized"
 
-    idx_FoV      = next(idx for idx, name in enumerate(params_names) if "FoV" in name)
+    # Personalized ranges: scalar = fixed value, [min,max] = marginalized range, None = keep default params_ranges
+    R_plot            = [30_000, 100_000] # [dimensionless]
+    l0_plot           = 1.5               # [µm]
+    Nl_plot           = [1_000, 100_000]  # [bins]
+    Dl_plot           = 0.1               # [µm]
+    WFE_plot          = WFE_ref           # [nm RMS]
+    IWA_plot          = IWA_ref           # [mas]
+    trans_instru_plot = [0.1, 0.5]        # [e-/ph]
+    sigma_m_plot      = 1e-3              # [%]
+    FoV_plot          = 1000              # [mas]
+
+    idx_FoV      = next(idx for idx, name in enumerate(params_names) if "FoV"     in name)
     idx_sigma_m  = next(idx for idx, name in enumerate(params_names) if "sigma_m" in name)
-    idx_l0       = next(idx for idx, name in enumerate(params_names) if "l0" in name)
+    idx_l0       = next(idx for idx, name in enumerate(params_names) if "l0"      in name)
     noise_labels = np.array(["Stellar halo", "Background", "Read noise", "Dark current", str(residuals)], dtype=object)
+
+    # Parameter ranges used specifically for population diagnostics
+    params_ranges_pop = [tuple(rng) for rng in params_ranges]
+    if snr_population_mode == "personalized":
+        personalized_ranges = {"R": R_plot, "l0": l0_plot, "Nl": Nl_plot, "Dl": Dl_plot, "WFE": WFE_plot, "IWA": IWA_plot, "trans_instru": trans_instru_plot, "sigma_m": sigma_m_plot, "FoV": FoV_plot}
+        allowed_keys        = {"IFU": {"R", "l0", "Nl", "WFE", "IWA", "trans_instru", "sigma_m", "FoV"}, "imager": {"l0", "Dl", "WFE", "IWA", "trans_instru", "sigma_m", "FoV"}}[instru_type]
+        def format_range(r):
+            return f"{r[0]:g}" if np.isclose(r[0], r[1]) else f"[{r[0]:g}, {r[1]:g}]"
+        def format_value(value):
+            if value is None:
+                return "None"
+            value = np.asarray(value).ravel()
+            return f"{value[0]:g}" if value.size == 1 else f"[{value[0]:g}, {value[1]:g}]"
+        def print_range(key, value, used=None, warning=""):
+            used_str = f"-> {used}" if used is not None else ""
+            print(f"  {key+'_plot':<18} = {format_value(value):<14} {used_str:<14} {warning}")
+        print("\nPopulation plot personalized ranges:")
+        for key, value in personalized_ranges.items():
+            if key not in allowed_keys:
+                print_range(key, value, warning=f"(WARNING: not used for {instru_type})")
+                continue
+            idx = next((idx for idx, name in enumerate(params_names) if name == key or key in name), None)
+            # Dimension existed originally but was removed because it was fixed
+            if idx is None:
+                idx_orig = next((idx for idx, name in enumerate(orig_names) if name == key or key in name), None)
+                if idx_orig is not None:
+                    fixed_value = float(np.asarray(orig_params[idx_orig])[0])
+                    requested   = np.asarray(value, dtype=float).ravel() if value is not None else np.array([])
+                    changed     = value is not None and (requested.size != 1 or not np.isclose(requested[0], fixed_value))
+                    print_range(key, value, f"{fixed_value:g}" if changed else None, f"(WARNING: parameter fixed at {fixed_value:g})")
+                else:
+                    print_range(key, value, warning="(WARNING: parameter unavailable)")
+                continue
+            # None -> keep default range
+            if value is None:
+                print_range(key, value, format_range(params_ranges_pop[idx]))
+                continue
+            axis      = np.asarray(params[idx], dtype=float)
+            requested = np.asarray(value, dtype=float).ravel()
+            if requested.size == 1:
+                requested = np.repeat(requested, 2)
+            elif requested.size != 2:
+                print_range(key, value, format_range(params_ranges_pop[idx]), "(WARNING: expected scalar or [min, max]; default used)")
+                continue
+            warning = ""
+            if requested[0] > requested[1]:
+                requested = requested[::-1]
+                warning   = "(WARNING: reversed range reordered)"
+            used                   = np.clip(requested, axis[0], axis[-1])
+            params_ranges_pop[idx] = (float(used[0]), float(used[1]))
+            changed = not np.allclose(requested, used)
+            if changed:
+                warning = f"(WARNING: cropped to [{axis[0]:g}, {axis[-1]:g}])"
+            print_range(key, value, format_range(params_ranges_pop[idx]) if changed else None, warning)
+        print()
+
 
     # Best-Pdet configuration
     if snr_population_mode == "max":
@@ -2561,12 +2630,12 @@ def main():
         var_syst = N_DIT_best**2 * sigma_m_best**2 * sigma_syst_base_2_best
 
     # Marginalized parameter space
-    elif snr_population_mode == "marginalized":
-        non_FoV_dims      = [idim for idim in range(Ndim) if idim != idx_FoV]
-        params_snr        = [params[idim] for idim in non_FoV_dims]
-        params_ranges_snr = [params_ranges[idim] for idim in non_FoV_dims]
-        params_priors_snr = [params_priors[idim] for idim in non_FoV_dims]
-        params_names_snr  = [params_names[idim] for idim in non_FoV_dims]
+    elif snr_population_mode in ("marginalized", "personalized"):
+        non_FoV_dims      = [idim                    for idim in range(Ndim) if idim != idx_FoV]
+        params_snr        = [params[idim]            for idim in non_FoV_dims]
+        params_ranges_snr = [params_ranges_pop[idim] for idim in non_FoV_dims]
+        params_priors_snr = [params_priors[idim]     for idim in non_FoV_dims]
+        params_names_snr  = [params_names[idim]      for idim in non_FoV_dims]
 
         SNR_plot = np.zeros(N_PT, dtype=float)
         for ip in tqdm(range(N_PT), desc="Marginalizing SNR over parameter grid"):
@@ -2574,7 +2643,7 @@ def main():
             SNR_plot[ip] = float(reduce_hcube(hcube=SNR_i, dims_to_keep=[], params=params_snr, params_ranges=params_ranges_snr, params_priors=params_priors_snr, params_names=params_names_snr, verbose=False))
 
         # FoV marginalization
-        idx_FoV_range, w_FoV = get_axis_weights_in_range(axis=np.asarray(params[idx_FoV], dtype=float), pmin=params_ranges[idx_FoV][0], pmax=params_ranges[idx_FoV][1], prior=params_priors[idx_FoV])
+        idx_FoV_range, w_FoV = get_axis_weights_in_range(axis=np.asarray(params[idx_FoV], dtype=float), pmin=params_ranges_pop[idx_FoV][0], pmax=params_ranges_pop[idx_FoV][1], prior=params_priors[idx_FoV])
         w_FoV               /= np.sum(w_FoV)
         FoV_weight_planets   = np.zeros(N_PT, dtype=float)
         for iFoV, weight in zip(idx_FoV_range, w_FoV):
@@ -2583,13 +2652,13 @@ def main():
 
         # Raw quantities contain neither sigma_m nor FoV
         raw_dims          = [idim for idim in range(Ndim) if idim not in (idx_sigma_m, idx_FoV)]
-        params_raw        = [params[idim] for idim in raw_dims]
-        params_ranges_raw = [params_ranges[idim] for idim in raw_dims]
-        params_priors_raw = [params_priors[idim] for idim in raw_dims]
-        params_names_raw  = [params_names[idim] for idim in raw_dims]
+        params_raw        = [params[idim]            for idim in raw_dims]
+        params_ranges_raw = [params_ranges_pop[idim] for idim in raw_dims]
+        params_priors_raw = [params_priors[idim]     for idim in raw_dims]
+        params_names_raw  = [params_names[idim]      for idim in raw_dims]
         idx_l0_raw        = raw_dims.index(idx_l0)
 
-        idx_sigma_m_range, w_sigma_m = get_axis_weights_in_range(axis=np.asarray(params[idx_sigma_m], dtype=float), pmin=params_ranges[idx_sigma_m][0], pmax=params_ranges[idx_sigma_m][1], prior=params_priors[idx_sigma_m])
+        idx_sigma_m_range, w_sigma_m = get_axis_weights_in_range(axis=np.asarray(params[idx_sigma_m], dtype=float), pmin=params_ranges_pop[idx_sigma_m][0], pmax=params_ranges_pop[idx_sigma_m][1], prior=params_priors[idx_sigma_m])
         w_sigma_m                   /= np.sum(w_sigma_m)
         sigma_m_axis                 = np.asarray(params[idx_sigma_m], dtype=float)
         mean_sigma_m_2               = np.sum(w_sigma_m * (sigma_m_axis[idx_sigma_m_range] / 100.0)**2)
@@ -2685,7 +2754,7 @@ def main():
             )
 
     else:
-        raise ValueError("snr_population_mode must be 'max' or 'marginalized'.")
+        raise ValueError("snr_population_mode must be 'max', 'marginalized' or 'personalized'.")
 
     noise_stack                 = np.vstack([var_halo, var_bkg, var_RON, var_DC, var_syst])
     valid_noise                 = np.any(np.isfinite(noise_stack), axis=0)
