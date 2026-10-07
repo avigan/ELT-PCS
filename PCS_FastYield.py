@@ -1477,17 +1477,17 @@ def main():
     print("\nFastYield data files suffix:", suffix)
 
     # File paths derived from suffix
-    signal_path                 = sim_dir / f"signal_{suffix}.npy"
-    sigma_halo_2_path           = sim_dir / f"sigma_halo_2_{suffix}.npy"
-    sigma_bkg_2_path            = sim_dir / f"sigma_bkg_2_{suffix}.npy"
-    DIT_path                    = sim_dir / f"DIT_{suffix}.npy"
+    signal_path                 = sim_dir / f"{suffix}_signal.npy"
+    sigma_halo_2_path           = sim_dir / f"{suffix}_sigma_halo_2.npy"
+    sigma_bkg_2_path            = sim_dir / f"{suffix}_sigma_bkg_2.npy"
+    DIT_path                    = sim_dir / f"{suffix}_DIT.npy"
     if instru_type == "IFU":
-        sigma_syst_base_2_path  = sim_dir / f"sigma_syst_base_2_{suffix}.npy"
+        sigma_syst_base_2_path  = sim_dir / f"{suffix}_sigma_syst_base_2.npy"
     else:
         sigma_syst_base_2_path  = None
-    PSF_profile_5D_tmp_path     = sim_dir / f"tmp_PSF_profile_5D_{suffix}.npy"
-    fraction_core_5D_tmp_path   = sim_dir / f"tmp_fraction_core_5D_{suffix}.npy"
-    PSF_profile_max_4D_tmp_path = sim_dir / f"tmp_PSF_profile_max_4D_{suffix}.npy"
+    PSF_profile_5D_tmp_path     = sim_dir / f"{suffix}_tmp_PSF_profile_5D.npy"
+    fraction_core_5D_tmp_path   = sim_dir / f"{suffix}_tmp_fraction_core_5D.npy"
+    PSF_profile_max_4D_tmp_path = sim_dir / f"{suffix}_tmp_PSF_profile_max_4D.npy"
 
     for p in [PSF_profile_5D_tmp_path, fraction_core_5D_tmp_path, PSF_profile_max_4D_tmp_path]:
         if p.exists():
