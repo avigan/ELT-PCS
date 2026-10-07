@@ -1,5 +1,5 @@
 # instrument concept A: High-res VIS IFU
-# (V)RI, R = 10**5, FoV ~100 mas
+# RI-band only, R = 10**5, FoV ~100 mas
 instru_type: IFU
 postproc: MM           # MM or DI
 

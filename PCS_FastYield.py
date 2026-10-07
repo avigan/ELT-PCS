@@ -1214,12 +1214,14 @@ def main():
     trans_dust = 0.90      # effect of dust, from common ICD, section 4.11, p37 (Document Number: ESO-253082)
 
     # --- Detector mode ---
-    # "constant_H4RG"
-    #     Simple NIR baseline. Recommended if l0_min >= ~0.8 µm.
-    #
     # "PCS_visNIR_conservative"
-    #     More realistic PCS-like prescription over 0.6--2.5 µm:
-    #         visible/red optical : VIS_CCD or EMCCD-like detector
+    #     Conservative detector setting:
+    #         visible/red optical : VIS_CCD (λ<0.8 µm)
+    #         NIR                 : H4RG
+    #
+    # "PCS_low_noise_visNIR"
+    #     More optimistic, low-noise detector setting:
+    #         visible/red optical : EMCCD (λ<0.8 µm)
     #         NIR                 : H4RG
     #
     # "PCS_NIR_APD_optimistic"
@@ -1238,7 +1240,7 @@ def main():
 
     # --- Instrument concept ---
     # One YAML file per concept in instrument_concepts/ (ifu_global, imager_global, concept_A_highres_vis_ifu, ...)
-    concept_name       = "imager_global"
+    concept_name       = "ifu_global"
     instrument_concept = load_instrument_concept(concept_name)
 
     # --- General parameters for the simulation ---
@@ -1247,7 +1249,7 @@ def main():
     strehl             = "Q2"                                  # Sky atmospheric condition (1st quartile, 2nd, etc.)
     SNR_thr            = 5                                     # Detection threshold
     exposure_time      = 10*60                                 # Total exposure time per planet [mn]
-    force_new_calc     = False                                 # Forcing new simulations calculations
+    force_new_calc     = True                                 # Forcing new simulations calculations
     thermal_model      = "auto"                                # Model for the thermal spectrum of the planet ("auto", "None", "BT-Settl", "Exo-REM", "SONORA", "PICASO", "Saumon", etc.)
     reflected_model    = "auto"                                # Model for the albedo of the planet ("auto", "tellurics", "flat", "PICASO")
     instru_type        = instrument_concept['instru_type']     # Type of instrument ("IFU" or "imager")
@@ -1695,10 +1697,10 @@ def main():
         trans_tell_tel = Spectrum(wavelength=wave_instru, flux=trans_tell.flux*trans_tel.flux, R=np.fmax(trans_tell.R, trans_tel.R), T=None, lg=None, model=None, rv=None, vsini=None, sigma=None)
 
         # Plotting transmissions
-        plot_trans_tell_tel(trans_tell=trans_tell, trans_tel=trans_tel)
+        # plot_trans_tell_tel(trans_tell=trans_tell, trans_tel=trans_tel)
 
         # Background spectrum [ph/mas2/mn/µm] (from SkyCalc)
-        plot_bkg_skycalc(filename=instru_dir / "skytable_background.fits")
+        # plot_bkg_skycalc(filename=instru_dir / "skytable_background.fits")
         data_bkg         = fits.getdata(instru_dir / "skytable_background.fits")
         wave_bkg         = data_bkg["lam"]  * 1e-3             # [nm] => [µm]
         background       = data_bkg["flux"] * 60 * S / 1000**2 # [ph/s/m2/µm/arcsec2] => [ph/mas2/mn/µm]
