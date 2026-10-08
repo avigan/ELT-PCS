@@ -1240,7 +1240,7 @@ def main():
 
     # --- Instrument concept ---
     # One YAML file per concept in instrument_concepts/ (ifu_global, imager_global, concept_A_highres_vis_ifu, ...)
-    concept_name       = "ifu_global"
+    concept_name       = "imager_global"
     instrument_concept = load_instrument_concept(concept_name)
 
     # --- General parameters for the simulation ---
@@ -1249,7 +1249,7 @@ def main():
     strehl             = "Q2"                                  # Sky atmospheric condition (1st quartile, 2nd, etc.)
     SNR_thr            = 5                                     # Detection threshold
     exposure_time      = 10*60                                 # Total exposure time per planet [mn]
-    force_new_calc     = True                                 # Forcing new simulations calculations
+    force_new_calc     = False                                 # Forcing new simulations calculations
     thermal_model      = "auto"                                # Model for the thermal spectrum of the planet ("auto", "None", "BT-Settl", "Exo-REM", "SONORA", "PICASO", "Saumon", etc.)
     reflected_model    = "auto"                                # Model for the albedo of the planet ("auto", "tellurics", "flat", "PICASO")
     instru_type        = instrument_concept['instru_type']     # Type of instrument ("IFU" or "imager")
@@ -1473,21 +1473,23 @@ def main():
     else:
         raise ValueError("instru_type must be 'IFU' or 'imager'.")
     suffix, meta_clean, _payload = make_suffix(meta, n=16)
-    write_meta(sim_dir, suffix, meta_clean)
+    sim_dir_concept = sim_dir / concept_name
+    sim_dir_concept.mkdir(parents=True, exist_ok=True)
+    write_meta(sim_dir_concept, suffix, meta_clean, suffix_as_prefix=True)
     print("\nFastYield data files suffix:", suffix)
 
     # File paths derived from suffix
-    signal_path                 = sim_dir / f"{suffix}_signal.npy"
-    sigma_halo_2_path           = sim_dir / f"{suffix}_sigma_halo_2.npy"
-    sigma_bkg_2_path            = sim_dir / f"{suffix}_sigma_bkg_2.npy"
-    DIT_path                    = sim_dir / f"{suffix}_DIT.npy"
+    signal_path                 = sim_dir_concept / f"{suffix}_signal.npy"
+    sigma_halo_2_path           = sim_dir_concept / f"{suffix}_sigma_halo_2.npy"
+    sigma_bkg_2_path            = sim_dir_concept / f"{suffix}_sigma_bkg_2.npy"
+    DIT_path                    = sim_dir_concept / f"{suffix}_DIT.npy"
     if instru_type == "IFU":
-        sigma_syst_base_2_path  = sim_dir / f"{suffix}_sigma_syst_base_2.npy"
+        sigma_syst_base_2_path  = sim_dir_concept / f"{suffix}_sigma_syst_base_2.npy"
     else:
         sigma_syst_base_2_path  = None
-    PSF_profile_5D_tmp_path     = sim_dir / f"{suffix}_tmp_PSF_profile_5D.npy"
-    fraction_core_5D_tmp_path   = sim_dir / f"{suffix}_tmp_fraction_core_5D.npy"
-    PSF_profile_max_4D_tmp_path = sim_dir / f"{suffix}_tmp_PSF_profile_max_4D.npy"
+    PSF_profile_5D_tmp_path     = sim_dir_concept / f"{suffix}_tmp_PSF_profile_5D.npy"
+    fraction_core_5D_tmp_path   = sim_dir_concept / f"{suffix}_tmp_fraction_core_5D.npy"
+    PSF_profile_max_4D_tmp_path = sim_dir_concept / f"{suffix}_tmp_PSF_profile_max_4D.npy"
 
     for p in [PSF_profile_5D_tmp_path, fraction_core_5D_tmp_path, PSF_profile_max_4D_tmp_path]:
         if p.exists():
@@ -1842,7 +1844,7 @@ def main():
         if instru_type == "IFU":
             file_specs.append(("sigma_syst_base_2", sigma_syst_base_2_path, shape_SNR, dtype))
         total_nbytes = sum(memmap_nbytes(shape, dtype) for _, _, shape, dtype in file_specs)
-        print(f"\nCreating memmap files in {sim_dir}")
+        print(f"\nCreating memmap files in {sim_dir_concept}")
         print(f"Total expected disk usage: {format_nbytes(total_nbytes)}")
         print("---------------------------------------------------------")
         print()
@@ -1893,7 +1895,7 @@ def main():
     alpha              = 0.9                 # Opacity
     gain               = True                # True for probability gain (normalized yield), False for absolute yields
     light_regime_plot  = "thermal+reflected" # 'thermal", "reflected" or "thermal+reflected"
-    band_regime_plot   =  "R"                # Band where the thermal/reflected domination regime is splitted
+    band_regime_plot   =  "J"                # Band where the thermal/reflected domination regime is splitted
     ptypes             = ["Jupiter",                 "Saturn",                "Neptune",                 "Earth"]
     marker_ptypes      = {"Jupiter": "s",            "Saturn": "v",           "Neptune": "P",            "Earth": "o"}
     label_ptypes       = {"Jupiter": "Jupiter-like", "Saturn": "Saturn-like", "Neptune": "Neptune-like", "Earth": "Earth-like"}
@@ -1928,8 +1930,8 @@ def main():
     # Computing the SNR and detection mask (SNR > SNR_thr) for each planet
     # For IFU (8D):    (planets, R, l0, Nl, WFE, IWA, trans_instru, sigma_m)
     # For Imager (7D): (planets,    l0, Dl, WFE, IWA, trans_instru, sigma_m)
-    SNR_planets     = get_SNR(instru=instru, instru_type=instru_type, post_processing=post_processing, exposure_time=exposure_time, min_DIT=min_DIT, RON0=RON0, RON_lim=RON_lim, DC0=DC0, A_FWHM=A_FWHM, Rc=Rc, filter_type=filter_type, signal_planets=signal_planets, sigma_halo_2_planets=sigma_halo_2_planets, sigma_bkg_2_planets=sigma_bkg_2_planets, sigma_syst_base_2_planets=sigma_syst_base_2_planets, DIT_planets=DIT_planets, R=R if instru_type == "IFU" else None, Nl=Nl if instru_type == "IFU" else None, sigma_m=sigma_m, sim_dir=sim_dir, suffix=suffix, dtype=dtype)
-    mask_detections = get_mask_detections(SNR_planets=SNR_planets, SNR_thr=SNR_thr, sim_dir=sim_dir, suffix=suffix)
+    SNR_planets     = get_SNR(instru=instru, instru_type=instru_type, post_processing=post_processing, exposure_time=exposure_time, min_DIT=min_DIT, RON0=RON0, RON_lim=RON_lim, DC0=DC0, A_FWHM=A_FWHM, Rc=Rc, filter_type=filter_type, signal_planets=signal_planets, sigma_halo_2_planets=sigma_halo_2_planets, sigma_bkg_2_planets=sigma_bkg_2_planets, sigma_syst_base_2_planets=sigma_syst_base_2_planets, DIT_planets=DIT_planets, R=R if instru_type == "IFU" else None, Nl=Nl if instru_type == "IFU" else None, sigma_m=sigma_m, sim_dir=sim_dir_concept, suffix=suffix, dtype=dtype)
+    mask_detections = get_mask_detections(SNR_planets=SNR_planets, SNR_thr=SNR_thr, sim_dir=sim_dir_concept, suffix=suffix)
 
     # Precompute FoV gating once
     p0_FoV = np.searchsorted(FoV / 2, separation_planets, side="left").astype(np.int32)
@@ -2171,7 +2173,7 @@ def main():
     title += f"\n{regime_label} light regime"
     title += f"\n{N_PT_plot} {table_type.replace('Archive', 'known').replace('Simulated', 'simulated')} planets"
     fig.suptitle(title, fontsize=18, weight="bold", x=0.63, y=0.89, linespacing=1.6)
-    fig.savefig(sim_dir / f"ELT_{instru}_{instru_type}_{post_processing}_corner_plot_{table_type}_{light_regime_plot}_Pdet.png", bbox_inches="tight", dpi=dpi_fig)
+    fig.savefig(sim_dir_concept / f"ELT_{instru}_{instru_type}_{post_processing}_corner_plot_{table_type}_{light_regime_plot}_Pdet.png", bbox_inches="tight", dpi=dpi_fig)
     plt.show(block=False)
 
 
@@ -2273,7 +2275,7 @@ def main():
     title += f"\n{N_PT} {table_type.replace('Archive', 'known').replace('Simulated', 'simulated')} planets"
     fig.suptitle(title, fontsize=fontsize + 6, weight="bold", y=1.00, linespacing=1.6)
     fig.tight_layout(h_pad=3.0, w_pad=3.0)
-    fig.savefig(sim_dir / f"ELT_{instru}_{instru_type}_{post_processing}_detection_{table_type}_{light_regime_plot}_Pdet.png", bbox_inches="tight", dpi=dpi_fig)
+    fig.savefig(sim_dir_concept / f"ELT_{instru}_{instru_type}_{post_processing}_detection_{table_type}_{light_regime_plot}_Pdet.png", bbox_inches="tight", dpi=dpi_fig)
     plt.show(block=False)
 
 
@@ -2421,7 +2423,7 @@ def main():
         title += f"\n{N_PT_ptype_plot_1D} {table_type.replace('Archive', 'known').replace('Simulated', 'simulated')} {ptype}-like planets"
         fig.suptitle(title, fontsize=fontsize + 6, weight="bold", y=1.00, linespacing=1.6)
         fig.subplots_adjust(left=0.05, right=0.85, bottom=0.05, top=0.88, wspace=0.15, hspace=0.3)
-        fig.savefig(sim_dir / f"ELT_{instru}_{instru_type}_{post_processing}_detection_band_{table_type}_{light_regime_plot}_{ptype}_Pdet.png", bbox_inches="tight", dpi=dpi_fig)
+        fig.savefig(sim_dir_concept / f"ELT_{instru}_{instru_type}_{post_processing}_detection_band_{table_type}_{light_regime_plot}_{ptype}_Pdet.png", bbox_inches="tight", dpi=dpi_fig)
         plt.show(block=False)
 
 
@@ -2499,7 +2501,7 @@ def main():
     panel_labels = {(ptype, regime): f"{label_ptypes[ptype]} — {regime.capitalize()}" for ptype, regime in panel_keys}
     title        = f"ELT/{instru} band × {'resolution' if instru_type == 'IFU' else 'speckle residuals'} yield - {instru_type} with {post_processing}"#"\nheatmap mode: {heatmap_mode}"
 
-    yield_heatmap_ELT(instru=instru, exposure_time=exposure_time, heatmaps=heatmaps, ptypes_heatmap=panel_keys, bands_plot=bands_plot, config_labels=spec_plot_labels, config_axis_name=spec_axis_name, x_axis_name="Spectral band", panel_labels=panel_labels, title=title, save_dir=sim_dir, filename=f"ELT_{instru}_{instru_type}_{post_processing}_band_spectral_heatmap_grid_{table_type}_{light_regime_plot}_{heatmap_mode}.png")
+    yield_heatmap_ELT(instru=instru, exposure_time=exposure_time, heatmaps=heatmaps, ptypes_heatmap=panel_keys, bands_plot=bands_plot, config_labels=spec_plot_labels, config_axis_name=spec_axis_name, x_axis_name="Spectral band", panel_labels=panel_labels, title=title, save_dir=sim_dir_concept, filename=f"ELT_{instru}_{instru_type}_{post_processing}_band_spectral_heatmap_grid_{table_type}_{light_regime_plot}_{heatmap_mode}.png")
 
 
 
@@ -2507,7 +2509,7 @@ def main():
     # POPULATION DIAGNOSTICS
 
     # Band used for the contrast shown on the y-axis
-    band_contrast_plot = "H"
+    band_contrast_plot = "J"
 
     # Choose how the detection status is defined for population plots.
     # "max"          : use the SNR at the global maximum of the Pdet hypercube.
@@ -2516,15 +2518,15 @@ def main():
     snr_population_mode = "personalized"
 
     # Personalized ranges: scalar = fixed value, [min,max] = marginalized range, None = keep default params_ranges
-    R_plot            = [30_000, 100_000] # [dimensionless]
-    l0_plot           = 1.5               # [µm]
-    Nl_plot           = [1_000, 100_000]  # [bins]
-    Dl_plot           = 0.1               # [µm]
+    R_plot            = 2900 #[30_000, 100_000] # [dimensionless]
+    l0_plot           = 1.23 #1.5               # [µm]
+    Nl_plot           = 500 #[1_000, 100_000]  # [bins]
+    Dl_plot           = 0.5               # [µm]
     WFE_plot          = WFE_ref           # [nm RMS]
     IWA_plot          = IWA_ref           # [mas]
-    trans_instru_plot = [0.1, 0.5]        # [e-/ph]
-    sigma_m_plot      = 1e-3              # [%]
-    FoV_plot          = 1000              # [mas]
+    trans_instru_plot = 0.25 #[0.1, 0.5]        # [e-/ph]
+    sigma_m_plot      = [1e-1, 1e-0]              # [%]
+    FoV_plot          = 2000              # [mas]
 
     idx_FoV      = next(idx for idx, name in enumerate(params_names) if "FoV"     in name)
     idx_sigma_m  = next(idx for idx, name in enumerate(params_names) if "sigma_m" in name)
@@ -2763,7 +2765,7 @@ def main():
     dominant_noise              = np.full(N_PT, "Unknown", dtype=object)
     dominant_noise[valid_noise] = noise_labels[np.nanargmax(noise_stack[:, valid_noise], axis=0)]
 
-    yield_population_plot(table=table_type, instru=instru, thermal_model=thermal_model, reflected_model=reflected_model, exposure_time=exposure_time, band_contrast_plot=band_contrast_plot, band_regime_plot=band_regime_plot, planet_table=planet_table, SNR_plot=SNR_plot, dominant_noise=dominant_noise, SNR_thr=SNR_thr, save_dir=sim_dir, DL_mas=np.nan,show_golden_sample=False, show_det_regions=False, show_ptype_regions=False)
+    yield_population_plot(table=table_type, instru=instru, instru_type=instru_type, post_processing=post_processing, thermal_model=thermal_model, reflected_model=reflected_model, exposure_time=exposure_time, band_contrast_plot=band_contrast_plot, band_regime_plot=band_regime_plot, planet_table=planet_table, SNR_plot=SNR_plot, dominant_noise=dominant_noise, SNR_thr=SNR_thr, save_dir=sim_dir_concept, DL_mas=np.nan,show_golden_sample=True, show_det_regions=False, show_ptype_regions=False)
 
 
 

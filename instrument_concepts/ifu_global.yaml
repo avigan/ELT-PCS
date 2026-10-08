@@ -2,7 +2,7 @@
 instru_type: IFU
 postproc: MM              # MM or DI
 
-R_min: 20                # [dimensionless] spectral resolution
+R_min: 100                # [dimensionless] spectral resolution
 R_max: 200_000
 l0_min: 0.6               # [µm] central wavelength
 l0_max: 2.5

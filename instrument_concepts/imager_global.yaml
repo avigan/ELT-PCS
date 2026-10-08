@@ -5,7 +5,7 @@ postproc: DI              # DI forced for imager
 l0_min: 0.6               # [µm] central wavelength
 l0_max: 2.5
 Dl_min: 0.01              # [µm] bandwidth
-Dl_max: 0.2
+Dl_max: 0.5
 FoV_min: 1                # [mas] field of view
 FoV_max: 1_000
 tr_min: 0.001             # [dimensionless] instrument transmission
