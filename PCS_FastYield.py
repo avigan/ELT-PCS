@@ -43,6 +43,32 @@ import gc
 import yaml
 
 
+# PCS SUMMARY PSF products are indexed by a single stellar V magnitude.
+# Never derive their magnitude coordinate independently at each wavelength.
+def get_star_vmag(planet):
+    """Read the observed stellar Vega-system V magnitude from the planet table."""
+    colnames = getattr(planet, "colnames", None)
+    if colnames is None and getattr(planet, "table", None) is not None:
+        colnames = planet.table.colnames
+    if colnames is None:
+        colnames = getattr(getattr(planet, "dtype", None), "names", ()) or ()
+    normalized = {str(name).lower().replace("_", "").replace(" ", ""): name for name in colnames}
+    for candidate in ("StarVmag", "StarVmag(Vega)", "Vmag", "st_vmag", "sy_vmag"):
+        key = candidate.lower().replace("_", "").replace(" ", "")
+        if key in normalized:
+            value = planet[normalized[key]]
+            if getattr(value, "mask", False) is not False and bool(np.any(value.mask)):
+                break
+            value = float(value)
+            if np.isfinite(value):
+                return value
+            break
+    raise ValueError(
+        f"Missing valid stellar V magnitude for planet row. Columns: {list(colnames)}. "
+        "PCS MAGxxx is defined in V; a wavelength-dependent pseudo-magnitude is not valid."
+    )
+
+
 # Parameters for multiprocessing
 nproc     = max(cpu_count()-3, 1)
 chunksize = 8
@@ -98,7 +124,7 @@ def interp_mag_l0_flat_4d(mag_grid, y_4d, mag_l0, dtype=None):
     ----------
     mag_grid : ndarray, shape (Nmag,)
         Stellar magnitude grid.
-    y_4d : ndarray, shape (N_l0, N_WFE, N_IWA, Nmag)
+    y_4d : ndarray, shape (N_l0, N_r_WFE, N_IWA, Nmag)
         Quantity sampled on the stellar-magnitude grid.
     mag_l0 : ndarray, shape (N_l0,)
         Stellar magnitude evaluated independently at each l0.
@@ -107,7 +133,7 @@ def interp_mag_l0_flat_4d(mag_grid, y_4d, mag_l0, dtype=None):
 
     Returns
     -------
-    out : ndarray, shape (N_l0, N_WFE, N_IWA)
+    out : ndarray, shape (N_l0, N_r_WFE, N_IWA)
         Interpolated quantity.
     """
     finite = np.isfinite(mag_l0)
@@ -272,7 +298,6 @@ def process_IFU(idx):
     wave_instru            = _IFU_CTX["wave_instru"]
     wave_K                 = _IFU_CTX["wave_K"]
     counts_vega_K          = _IFU_CTX["counts_vega_K"]
-    vega_flux_1D           = _IFU_CTX["vega_flux_1D"]
     mag_star               = _IFU_CTX["mag_star"]
     scale_spectrum         = _IFU_CTX["scale_spectrum"]
     N_R                    = _IFU_CTX["N_R"]
@@ -311,26 +336,24 @@ def process_IFU(idx):
     planet_spectrum = planet_spectrum.interpolate_wavelength(wave_instru, renorm=False) # [J/s/m2/µm]
 
 
-    # --- Computing mag_star_1D for each l0 ---
-    star_flux_1D = np.interp(l0, star_spectrum.wavelength, star_spectrum.flux, left=np.nan, right=np.nan) # (l0) [J/s/m2/µm]
-    mag_star_1D  = -2.5 * np.log10(star_flux_1D / vega_flux_1D)                                           # (l0) [no unit]
+    # PCS MAGxxx is a *single V-band magnitude*, independent of wavelength.
+    mag_star_1D = np.full(l0.shape, get_star_vmag(planet), dtype=dtype)
 
 
     # --- PSF data linearly interpolated at the planet's separation and stellar magnitude ---
-    # PSF_profile_5D     : (l0, WFE, IWA, mag_star, sep)
-    # fraction_core_5D   : (l0, WFE, IWA, mag_star, sep)
-    # PSF_profile_max_4D : (l0, WFE, IWA, mag_star)
+    # PSF_profile_5D     : (l0, r_WFE, IWA, mag_star, sep)
+    # fraction_core_5D   : (l0, r_WFE, IWA, mag_star, sep)
+    # PSF_profile_max_4D : (l0, r_WFE, IWA, mag_star)
     #
     # For speed, we first interpolate along separation, because separation_planet is
-    # a scalar for this planet. This avoids creating full (l0, WFE, IWA, sep) arrays.
-    PSF_profile_mag_4D   = interp_flat_last_axis(separation, PSF_profile_5D,   separation_planet, dtype=dtype) # (l0, WFE, IWA, mag_star)
-    fraction_core_mag_4D = interp_flat_last_axis(separation, fraction_core_5D, separation_planet, dtype=dtype) # (l0, WFE, IWA, mag_star)
+    # a scalar for this planet. This avoids creating full (l0, r_WFE, IWA, sep) arrays.
+    PSF_profile_mag_4D   = interp_flat_last_axis(separation, PSF_profile_5D,   separation_planet, dtype=dtype) # (l0, r_WFE, IWA, mag_star)
+    fraction_core_mag_4D = interp_flat_last_axis(separation, fraction_core_5D, separation_planet, dtype=dtype) # (l0, r_WFE, IWA, mag_star)
 
-    # Then interpolate along stellar magnitude. mag_star_1D depends on l0, so this
-    # specialized helper interpolates each l0 slice at its own magnitude.
-    PSF_profile_sep_3D   = interp_mag_l0_flat_4d(mag_star, PSF_profile_mag_4D,   mag_star_1D, dtype=dtype) # (l0, WFE, IWA) [star flux fraction/px]
-    fraction_core_sep_3D = interp_mag_l0_flat_4d(mag_star, fraction_core_mag_4D, mag_star_1D, dtype=dtype) # (l0, WFE, IWA) [planet flux fraction/FWHM]
-    PSF_profile_max_3D   = interp_mag_l0_flat_4d(mag_star, PSF_profile_max_4D,   mag_star_1D, dtype=dtype) # (l0, WFE, IWA) [max star flux fraction/px]
+    # Interpolate on the fixed stellar V magnitude at every wavelength.
+    PSF_profile_sep_3D   = interp_mag_l0_flat_4d(mag_star, PSF_profile_mag_4D,   mag_star_1D, dtype=dtype) # (l0, r_WFE, IWA) [star flux fraction/px]
+    fraction_core_sep_3D = interp_mag_l0_flat_4d(mag_star, fraction_core_mag_4D, mag_star_1D, dtype=dtype) # (l0, r_WFE, IWA) [planet flux fraction/FWHM]
+    PSF_profile_max_3D   = interp_mag_l0_flat_4d(mag_star, PSF_profile_max_4D,   mag_star_1D, dtype=dtype) # (l0, r_WFE, IWA) [max star flux fraction/px]
 
 
     # --- Converting in [ph/mn/µm] ---
@@ -477,82 +500,82 @@ def process_IFU(idx):
                     sigma_syst_base_2_3D[i, j, k] = 0.5 * (sigma_base_2_al_spec + sigma_base_2_al_spat)
 
 
-    # --- Computing DIT length in [mn/DIT] (R, l0, Nl, WFE, IWA, TI) ---
+    # --- Computing DIT length in [mn/DIT] (R, l0, Nl, r_WFE, IWA, TI) ---
 
     # max_star_flux in [ph/px/mn/bin] in the brightest pixel and bin (through coronagraph, if any):
     # [total star ph/mn/bin] in the brightest bin * [star flux fraction/px] in the brightest pixel => [ph/px/mn/bin] in the brightest pixel and bin
-    # (R, l0, Nl, 1, 1)                           * (1, l0, 1, WFE, IWA)                           => (R, l0, Nl, WFE, IWA)
+    # (R, l0, Nl, 1, 1)                           * (1, l0, 1, r_WFE, IWA)                           => (R, l0, Nl, r_WFE, IWA)
     max_star_flux_5D = max_star_flux_3D[:, :, :, None, None] * PSF_profile_max_3D[None, :, None, :, :]
 
     # max_star_flux in [e-/px/mn/bin] in the brightest pixel with instrumental transmission (through coronagraph, if any):
     # [ph/px/mn/bin] in the brightest pixel and bin * [e-/ph]             => [e-/px/mn/bin] in the brightest pixel and bin
-    # (R, l0, Nl, WFE, IWA, 1)                      * (1, 1, 1, 1, 1, TI) => (R, l0, Nl, WFE, IWA, TI)
+    # (R, l0, Nl, r_WFE, IWA, 1)                      * (1, 1, 1, 1, 1, TI) => (R, l0, Nl, r_WFE, IWA, TI)
     max_star_flux_6D = max_star_flux_5D[:, :, :, :, :, None] * trans_instru[None, None, None, None, None, :]
 
     # Computing DIT length in [mn/DIT] (+ clipping between min and max DIT)
     saturation_e_6D = saturation_e[None, :, None, None, None, None]
     min_DIT_6D      = min_DIT[None, :, None, None, None, None]
     max_DIT_6D      = max_DIT[None, :, None, None, None, None]
-    DIT_6D          = saturation_e_6D / max_star_flux_6D # (R, l0, Nl, WFE, IWA, TI) [mn/DIT]
-    DIT_6D          = np.maximum(DIT_6D, min_DIT_6D)     # (R, l0, Nl, WFE, IWA, TI) [mn/DIT]
-    DIT_6D          = np.minimum(DIT_6D, max_DIT_6D)     # (R, l0, Nl, WFE, IWA, TI) [mn/DIT]
+    DIT_6D          = saturation_e_6D / max_star_flux_6D # (R, l0, Nl, r_WFE, IWA, TI) [mn/DIT]
+    DIT_6D          = np.maximum(DIT_6D, min_DIT_6D)     # (R, l0, Nl, r_WFE, IWA, TI) [mn/DIT]
+    DIT_6D          = np.minimum(DIT_6D, max_DIT_6D)     # (R, l0, Nl, r_WFE, IWA, TI) [mn/DIT]
 
 
-    # --- Computing signal in [e-/FWHM/DIT] (R, l0, Nl, WFE, IWA, TI) ---
+    # --- Computing signal in [e-/FWHM/DIT] (R, l0, Nl, r_WFE, IWA, TI) ---
 
     # Signal at the planet's separation inside the FWHM in [ph/FWHM/mn] (throught coronagraph, if any)
     # [total planet ph/mn] * [planet flux fraction/FWHM] => [ph/FWHM/mn]
-    # (R, l0, Nl, 1, 1)    * (1, l0, 1, WFE, IWA)        => (R, l0, Nl, WFE, IWA)
+    # (R, l0, Nl, 1, 1)    * (1, l0, 1, r_WFE, IWA)        => (R, l0, Nl, r_WFE, IWA)
     signal_5D = signal_3D[:, :, :, None, None] * fraction_core_sep_3D[None, :, None, :, :]
 
     # Signal at the planet's separation inside the FWHM in [e-/FWHM/mn] with instrumental transmission (throught coronagraph, if any)
     # [ph/FWHM/mn]             * [e-/ph]             => [e-/FWHM/mn]
-    # (R, l0, Nl, WFE, IWA, 1) * (1, 1, 1, 1, 1, TI) => (R, l0, Nl, WFE, IWA, TI)
+    # (R, l0, Nl, r_WFE, IWA, 1) * (1, 1, 1, 1, 1, TI) => (R, l0, Nl, r_WFE, IWA, TI)
     signal_6D = signal_5D[:, :, :, :, :, None] * trans_instru[None, None, None, None, None, :]
 
     # Signal at the planet's separation inside the FWHM in [e-/FWHM/DIT] with instrumental transmission integrated over the DIT (throught coronagraph, if any)
     # [e-/FWHM/mn]              * [mn/DIT]                  => [e-/FWHM/DIT]
-    # (R, l0, Nl, WFE, IWA, TI) * (R, l0, Nl, WFE, IWA, TI) => (R, l0, Nl, WFE, IWA, TI)
+    # (R, l0, Nl, r_WFE, IWA, TI) * (R, l0, Nl, r_WFE, IWA, TI) => (R, l0, Nl, r_WFE, IWA, TI)
     signal_6D = signal_6D * DIT_6D
 
 
-    # --- Computing stellar halo photon noise variance (Poisson) in [e-/FWHM/DIT] (R, l0, Nl, WFE, IWA, TI) ---
+    # --- Computing stellar halo photon noise variance (Poisson) in [e-/FWHM/DIT] (R, l0, Nl, r_WFE, IWA, TI) ---
 
     # Stellar halo photon noise variance (Poisson) at the planet's separation in [ph/px/mn] (throught coronagraph, if any)
     # [total star ph/mn] * [star flux fraction/px] => [ph/px/mn]
-    # (R, l0, Nl, 1, 1)  * (1, l0, 1, WFE, IWA)    => (R, l0, Nl, WFE, IWA)
+    # (R, l0, Nl, 1, 1)  * (1, l0, 1, r_WFE, IWA)    => (R, l0, Nl, r_WFE, IWA)
     sigma_halo_2_5D = sigma_halo_2_3D[:, :, :, None, None] * PSF_profile_sep_3D[None, :, None, :, :]
 
     # Stellar halo photon noise variance (Poisson) at the planet's separation in [e-/px/mn] with instrumental transmission (throught coronagraph, if any)
     # [ph/px/mn]               * [e-/ph]             => [e-/px/mn]
-    # (R, l0, Nl, WFE, IWA, 1) * (1, 1, 1, 1, 1, TI) => (R, l0, Nl, WFE, IWA, TI)
+    # (R, l0, Nl, r_WFE, IWA, 1) * (1, 1, 1, 1, 1, TI) => (R, l0, Nl, r_WFE, IWA, TI)
     sigma_halo_2_6D = sigma_halo_2_5D[:, :, :, :, :, None] * trans_instru[None, None, None, None, None, :]
 
     # Stellar halo photon noise variance (Poisson) at the planet's separation in [e-/FWHM/DIT] with instrumental transmission integrated over the DIT and the FWHM (quadrature addition assuming statistical independance) (throught coronagraph, if any)
     # [e-/px/mn]                * [px/FWHM]*[mn/DIT]        => [e-/FWHM/DIT]
-    # (R, l0, Nl, WFE, IWA, TI) * (R, l0, Nl, WFE, IWA, TI) => (R, l0, Nl, WFE, IWA, TI)
+    # (R, l0, Nl, r_WFE, IWA, TI) * (R, l0, Nl, r_WFE, IWA, TI) => (R, l0, Nl, r_WFE, IWA, TI)
     sigma_halo_2_6D = sigma_halo_2_6D * A_FWHM*DIT_6D
 
 
-    # --- Computing stellar halo systematic noise variance (at sigma_m = 1) in [e-/FWHM/DIT]**2 (R, l0, Nl, WFE, IWA, TI) (all quantities are squared since sigma_syst**2 propto stellar_halo**2) ---
+    # --- Computing stellar halo systematic noise variance (at sigma_m = 1) in [e-/FWHM/DIT]**2 (R, l0, Nl, r_WFE, IWA, TI) (all quantities are squared since sigma_syst**2 propto stellar_halo**2) ---
 
     # Stellar halo systematic noise variance at the planet's separation in [ph/px/mn]**2 (throught coronagraph, if any)
     # [total star ph/mn]**2 * [star flux fraction/px]**2 => [ph/px/mn]**2
-    # (R, l0, Nl, 1, 1)     * (1, l0, 1, WFE, IWA)       => (R, l0, Nl, WFE, IWA)
+    # (R, l0, Nl, 1, 1)     * (1, l0, 1, r_WFE, IWA)       => (R, l0, Nl, r_WFE, IWA)
     sigma_syst_base_2_5D = sigma_syst_base_2_3D[:, :, :, None, None] * PSF_profile_sep_3D[None, :, None, :, :]**2
 
     # Stellar halo systematic noise variance at the planet's separation in [e-/px/mn]**2 with instrumental transmission (throught coronagraph, if any)
     # [ph/px/mn]**2            * [e-/ph]**2          => [e-/px/mn]**2
-    # (R, l0, Nl, WFE, IWA, 1) * (1, 1, 1, 1, 1, TI) => (R, l0, Nl, WFE, IWA, TI)
+    # (R, l0, Nl, r_WFE, IWA, 1) * (1, 1, 1, 1, 1, TI) => (R, l0, Nl, r_WFE, IWA, TI)
     sigma_syst_base_2_6D = sigma_syst_base_2_5D[:, :, :, :, :, None] * trans_instru[None, None, None, None, None, :]**2
 
     # Stellar halo systematic noise variance at the planet's separation in [e-/px/mn]**2 with instrumental transmission integrated over the DIT and the FWHM (throught coronagraph, if any) (we take A_FWHM**2 * DIT**2 since sigma_syst_base_2 propto H_integrated**2 propto A_FWHM**2*DIT**2, where H_integrated = the halo integrated over FWHM boxes and the DIT)
     # [e-/px/mn]**2             * [px/FWHM]**2*[mn/DIT]**2  => [e-/FWHM/DIT]**2
-    # (R, l0, Nl, WFE, IWA, TI) * (R, l0, Nl, WFE, IWA, TI) => (R, l0, Nl, WFE, IWA, TI)
+    # (R, l0, Nl, r_WFE, IWA, TI) * (R, l0, Nl, r_WFE, IWA, TI) => (R, l0, Nl, r_WFE, IWA, TI)
     sigma_syst_base_2_6D = sigma_syst_base_2_6D * A_FWHM**2*DIT_6D**2
 
 
-    # --- Computing background photon noise variance (Poisson) in [e-/FWHM/DIT] (R, l0, Nl, WFE, IWA, TI) ---
+    # --- Computing background photon noise variance (Poisson) in [e-/FWHM/DIT] (R, l0, Nl, r_WFE, IWA, TI) ---
 
     # Background photon noise variance (Poisson) in [e-/px/mn] with instrumental transmission
     # [ph/px/mn]     * [e-/ph]       => [e-/px/mn]
@@ -561,7 +584,7 @@ def process_IFU(idx):
 
     # Background photon noise variance (Poisson) in [e-/FWHM/DIT] with instrumental transmission integrated over the DIT and the FWHM (quadrature addition assuming statistical independance)
     # [e-/px/mn]            * [px/FWHM]*[mn/DIT]        => [e-/FWHM/DIT]
-    # (R, l0, Nl, 1, 1, TI) * (R, l0, Nl, WFE, IWA, TI) => (R, l0, Nl, WFE, IWA, TI)
+    # (R, l0, Nl, 1, 1, TI) * (R, l0, Nl, r_WFE, IWA, TI) => (R, l0, Nl, r_WFE, IWA, TI)
     sigma_bkg_2_6D = sigma_bkg_2_4D[:, :, :, None, None, :] * A_FWHM*DIT_6D
 
 
@@ -588,7 +611,6 @@ def process_IM(idx):
     wave_instru        = _IM_CTX["wave_instru"]
     wave_K             = _IM_CTX["wave_K"]
     counts_vega_K      = _IM_CTX["counts_vega_K"]
-    vega_flux_1D       = _IM_CTX["vega_flux_1D"]
     mag_star           = _IM_CTX["mag_star"]
     scale_spectrum     = _IM_CTX["scale_spectrum"]
     trans_instru       = _IM_CTX["trans_instru"]
@@ -613,26 +635,24 @@ def process_IM(idx):
     planet_spectrum, _, _, star_spectrum = get_thermal_reflected_spectrum(planet=planet, thermal_model=thermal_model, reflected_model=reflected_model, instru=None, wave_model=wave_instru, wave_K=wave_K, counts_vega_K=counts_vega_K, show=False, in_planet_mag=True, interpolated_spectrum=True, apply_kinematics=False)
 
 
-    # --- Computing mag_star_1D for each l0 ---
-    star_flux_1D = np.interp(l0, star_spectrum.wavelength, star_spectrum.flux, left=np.nan, right=np.nan) # (l0) [J/s/m2/µm]
-    mag_star_1D  = -2.5 * np.log10(star_flux_1D / vega_flux_1D)                                           # (l0) [no unit]
+    # PCS AO performance is indexed by the same stellar V magnitude at all l0.
+    mag_star_1D = np.full(l0.shape, get_star_vmag(planet), dtype=dtype)
 
 
     # --- PSF data linearly interpolated at the planet's separation and stellar magnitude ---
-    # PSF_profile_5D     : (l0, WFE, IWA, mag_star, sep)
-    # fraction_core_5D   : (l0, WFE, IWA, mag_star, sep)
-    # PSF_profile_max_4D : (l0, WFE, IWA, mag_star)
+    # PSF_profile_5D     : (l0, r_WFE, IWA, mag_star, sep)
+    # fraction_core_5D   : (l0, r_WFE, IWA, mag_star, sep)
+    # PSF_profile_max_4D : (l0, r_WFE, IWA, mag_star)
     #
     # For speed, we first interpolate along separation, because separation_planet is
-    # a scalar for this planet. This avoids creating full (l0, WFE, IWA, sep) arrays.
-    PSF_profile_mag_4D   = interp_flat_last_axis(separation, PSF_profile_5D,   separation_planet, dtype=dtype) # (l0, WFE, IWA, mag_star)
-    fraction_core_mag_4D = interp_flat_last_axis(separation, fraction_core_5D, separation_planet, dtype=dtype) # (l0, WFE, IWA, mag_star)
+    # a scalar for this planet. This avoids creating full (l0, r_WFE, IWA, sep) arrays.
+    PSF_profile_mag_4D   = interp_flat_last_axis(separation, PSF_profile_5D,   separation_planet, dtype=dtype) # (l0, r_WFE, IWA, mag_star)
+    fraction_core_mag_4D = interp_flat_last_axis(separation, fraction_core_5D, separation_planet, dtype=dtype) # (l0, r_WFE, IWA, mag_star)
 
-    # Then interpolate along stellar magnitude. mag_star_1D depends on l0, so this
-    # specialized helper interpolates each l0 slice at its own magnitude.
-    PSF_profile_sep_3D   = interp_mag_l0_flat_4d(mag_star, PSF_profile_mag_4D,   mag_star_1D, dtype=dtype) # (l0, WFE, IWA) [star flux fraction/px]
-    fraction_core_sep_3D = interp_mag_l0_flat_4d(mag_star, fraction_core_mag_4D, mag_star_1D, dtype=dtype) # (l0, WFE, IWA) [planet flux fraction/FWHM]
-    PSF_profile_max_3D   = interp_mag_l0_flat_4d(mag_star, PSF_profile_max_4D,   mag_star_1D, dtype=dtype) # (l0, WFE, IWA) [max star flux fraction/px]
+    # Interpolate on the fixed stellar V magnitude at every wavelength.
+    PSF_profile_sep_3D   = interp_mag_l0_flat_4d(mag_star, PSF_profile_mag_4D,   mag_star_1D, dtype=dtype) # (l0, r_WFE, IWA) [star flux fraction/px]
+    fraction_core_sep_3D = interp_mag_l0_flat_4d(mag_star, fraction_core_mag_4D, mag_star_1D, dtype=dtype) # (l0, r_WFE, IWA) [planet flux fraction/FWHM]
+    PSF_profile_max_3D   = interp_mag_l0_flat_4d(mag_star, PSF_profile_max_4D,   mag_star_1D, dtype=dtype) # (l0, r_WFE, IWA) [max star flux fraction/px]
 
 
     # --- Converting in [ph/mn/bin] ---
@@ -645,63 +665,63 @@ def process_IM(idx):
     signal_2D      = window_sums_1d(trans_tell_tel * planet, idx_lo, idx_hi).astype(dtype) # = sum ( trans * S_planet ) (l0, Dl) [ph/mn]
     star_flux_2D   = window_sums_1d(trans_tell_tel * star,   idx_lo, idx_hi).astype(dtype) # = sum ( trans * S_star )   (l0, Dl) [ph/mn]
 
-    # --- Computing DIT length in [mn/DIT] (l0, Dl, WFE, IWA, TI) ---
+    # --- Computing DIT length in [mn/DIT] (l0, Dl, r_WFE, IWA, TI) ---
 
     # max_star_flux in [ph/px/mn] in the brightest pixel (through coronagraph, if any):
     # [total star ph/mn] * [star flux fraction/px] in the brightest pixel => [ph/px/mn] in the brightest pixel
-    # (l0, Dl, 1, 1)     * (l0, 1, WFE, IWA)                              => (l0, Dl, WFE, IWA)
+    # (l0, Dl, 1, 1)     * (l0, 1, r_WFE, IWA)                              => (l0, Dl, r_WFE, IWA)
     max_star_flux_4D = star_flux_2D[:, :, None, None] * PSF_profile_max_3D[:, None, :, :]
 
     # max_star_flux in [e-/px/mn] in the brightest pixel with instrumental transmission (through coronagraph, if any):
     # [ph/px/mn] in the brightest pixel * [e-/ph]          => [e-/px/mn] in the brightest pixel
-    # (l0, Dl, WFE, IWA, 1)             * (1, 1, 1, 1, TI) => (l0, Dl, WFE, IWA, TI)
+    # (l0, Dl, r_WFE, IWA, 1)             * (1, 1, 1, 1, TI) => (l0, Dl, r_WFE, IWA, TI)
     max_star_flux_5D = max_star_flux_4D[:, :, :, :, None] * trans_instru[None, None, None, None, :]
 
     # Computing DIT length in [mn/DIT] (+ clipping between min and max DIT)
     saturation_e_5D = saturation_e[:, None, None, None, None]
     min_DIT_5D      = min_DIT[:, None, None, None, None]
     max_DIT_5D      = max_DIT[:, None, None, None, None]
-    DIT_5D          = saturation_e_5D / max_star_flux_5D # (l0, Dl, WFE, IWA, TI) [mn/DIT]
-    DIT_5D          = np.maximum(DIT_5D, min_DIT_5D)     # (l0, Dl, WFE, IWA, TI) [mn/DIT]
-    DIT_5D          = np.minimum(DIT_5D, max_DIT_5D)     # (l0, Dl, WFE, IWA, TI) [mn/DIT]
+    DIT_5D          = saturation_e_5D / max_star_flux_5D # (l0, Dl, r_WFE, IWA, TI) [mn/DIT]
+    DIT_5D          = np.maximum(DIT_5D, min_DIT_5D)     # (l0, Dl, r_WFE, IWA, TI) [mn/DIT]
+    DIT_5D          = np.minimum(DIT_5D, max_DIT_5D)     # (l0, Dl, r_WFE, IWA, TI) [mn/DIT]
 
-    # --- Computing signal in [e-/FWHM/DIT] (l0, Dl, WFE, IWA, TI) ---
+    # --- Computing signal in [e-/FWHM/DIT] (l0, Dl, r_WFE, IWA, TI) ---
 
     # Signal at the planet's separation inside the FWHM in [ph/FWHM/mn] (throught coronagraph, if any)
     # [total planet ph/mn] * [planet flux fraction/FWHM] => [ph/FWHM/mn]
-    # (l0, Dl, 1, 1)       * (l0, 1, WFE, IWA)           => (l0, Dl, WFE, IWA)
+    # (l0, Dl, 1, 1)       * (l0, 1, r_WFE, IWA)           => (l0, Dl, r_WFE, IWA)
     signal_4D = signal_2D[:, :, None, None] * fraction_core_sep_3D[:, None, :, :]
 
     # Signal at the planet's separation inside the FWHM in [e-/FWHM/mn] with instrumental transmission (throught coronagraph, if any)
     # [ph/FWHM/mn]          * [e-/ph]          => [e-/FWHM/mn]
-    # (l0, Dl, WFE, IWA, 1) * (1, 1, 1, 1, TI) => (l0, Dl, WFE, IWA, TI)
+    # (l0, Dl, r_WFE, IWA, 1) * (1, 1, 1, 1, TI) => (l0, Dl, r_WFE, IWA, TI)
     signal_5D = signal_4D[:, :, :, :, None] * trans_instru[None, None, None, None, :]
 
     # Signal at the planet's separation inside the FWHM in [e-/FWHM/DIT] with instrumental transmission integrated over the DIT(throught coronagraph, if any)
     # [e-/FWHM/mn]           * [mn/DIT]               => [e-/FWHM/DIT]
-    # (l0, Dl, WFE, IWA, TI) * (l0, Dl, WFE, IWA, TI) => (l0, Dl, WFE, IWA, TI)
+    # (l0, Dl, r_WFE, IWA, TI) * (l0, Dl, r_WFE, IWA, TI) => (l0, Dl, r_WFE, IWA, TI)
     signal_5D = signal_5D * DIT_5D
 
 
-    # --- Computing stellar halo photon noise variance (Poisson) in [e-/FWHM/DIT] (l0, Dl, WFE, IWA, TI) ---
+    # --- Computing stellar halo photon noise variance (Poisson) in [e-/FWHM/DIT] (l0, Dl, r_WFE, IWA, TI) ---
 
     # Stellar halo photon noise variance (Poisson) at the planet's separation in [ph/px/mn] (throught coronagraph, if any)
     # [total star ph/mn] * [star flux fraction/px] => [ph/px/mn]
-    # (l0, Dl, 1, 1)     * (l0, 1, WFE, IWA)       => (l0, Dl, WFE, IWA)
+    # (l0, Dl, 1, 1)     * (l0, 1, r_WFE, IWA)       => (l0, Dl, r_WFE, IWA)
     sigma_halo_2_4D = star_flux_2D[:, :, None, None] * PSF_profile_sep_3D[:, None, :, :]
 
     # Stellar halo photon noise variance (Poisson) at the planet's separation in [e-/px/mn] with instrumental transmission (throught coronagraph, if any)
     # [ph/px/mn]            * [e-/ph]          => [e-/px/mn]
-    # (l0, Dl, WFE, IWA, 1) * (1, 1, 1, 1, TI) => (l0, Dl, WFE, IWA, TI)
+    # (l0, Dl, r_WFE, IWA, 1) * (1, 1, 1, 1, TI) => (l0, Dl, r_WFE, IWA, TI)
     sigma_halo_2_5D = sigma_halo_2_4D[:, :, :, :, None] * trans_instru[None, None, None, None, :]
 
     # Stellar halo photon noise variance (Poisson) at the planet's separation in [e-/FWHM/DIT] with instrumental transmission integrated over the DIT and the FWHM (quadrature addition assuming statistical independance) (throught coronagraph, if any)
     # [e-/px/mn]             * [px/FWHM]*[mn/DIT]     => [e-/FWHM/DIT]
-    # (l0, Dl, WFE, IWA, TI) * (l0, Dl, WFE, IWA, TI) => (l0, Dl, WFE, IWA, TI)
+    # (l0, Dl, r_WFE, IWA, TI) * (l0, Dl, r_WFE, IWA, TI) => (l0, Dl, r_WFE, IWA, TI)
     sigma_halo_2_5D = sigma_halo_2_5D * A_FWHM*DIT_5D
 
 
-    # --- Computing background photon noise variance (Poisson) in [e-/FWHM/DIT] (l0, Dl, WFE, IWA, TI) ---
+    # --- Computing background photon noise variance (Poisson) in [e-/FWHM/DIT] (l0, Dl, r_WFE, IWA, TI) ---
 
     # Background photon noise variance (Poisson) in [e-/px/mn] with instrumental transmission
     # [ph/px/mn]  * [e-/ph]    => [e-/px/mn]
@@ -710,7 +730,7 @@ def process_IM(idx):
 
     # Background photon noise variance (Poisson) in [e-/FWHM/DIT] with instrumental transmission integrated over the DIT and the FWHM (quadrature addition assuming statistical independance)
     # [e-/px/mn]         * [px/FWHM]*[mn/DIT]     => [e-/FWHM/DIT]
-    # (l0, Dl, 1, 1, TI) * (l0, Dl, WFE, IWA, TI) => (l0, Dl, WFE, IWA, TI)
+    # (l0, Dl, 1, 1, TI) * (l0, Dl, r_WFE, IWA, TI) => (l0, Dl, r_WFE, IWA, TI)
     sigma_bkg_2_5D = sigma_bkg_2_3D[:, :, None, None, :] * A_FWHM*DIT_5D
 
 
@@ -1086,7 +1106,7 @@ def reduce_hcube(hcube, dims_to_keep, params, params_ranges, params_priors, para
         Dimensions of parameters to keep in the final reduced hcube.
     params : list of 1D arrays
         Example:
-            [R, l0, Nl, WFE, IWA, trans_instru, sigma_m, FoV]
+            [R, l0, Nl, r_WFE, IWA, trans_instru, sigma_m, FoV]
     params_ranges : list of tuple
         One entry per parameter, same order as 'params'.
         Each entry must be (pmin, pmax).
@@ -1098,7 +1118,7 @@ def reduce_hcube(hcube, dims_to_keep, params, params_ranges, params_priors, para
         Only used for marginalized parameters.
     params_names : list of str
         Example:
-            ["R", "l0", "Nl", "WFE", "IWA", "trans_instru", "sigma_m", "FoV"]
+            ["R", "l0", "Nl", "r_WFE", "IWA", "trans_instru", "sigma_m", "FoV"]
     verbose : bool
         Print a summary.
 
@@ -1203,7 +1223,7 @@ def main():
     # ---------------------------
     # Parameters
     # ---------------------------
-    PCS_CODE_VERSION = "PCS_sim_v2"
+    PCS_CODE_VERSION = "PCS_sim_rWFE_Vmag_lam0D_v1"
     dtype            = np.float32
 
     # --- Instrument specs (fixed) ---
@@ -1244,7 +1264,7 @@ def main():
     instrument_concept = load_instrument_concept(concept_name)
 
     # --- General parameters for the simulation ---
-    coronagraph        = "LYOT"                                # Coronagraph config
+    coronagraph        = "CLC"                                 # "CLC", "APLC", or None; matches PCS SUMMARY FITS labels
     apodizer           = "NO_SP"                               # Shaped pupil mask (NO_SP => no mask)
     strehl             = "Q2"                                  # Sky atmospheric condition (1st quartile, 2nd, etc.)
     SNR_thr            = 5                                     # Detection threshold
@@ -1254,7 +1274,8 @@ def main():
     reflected_model    = "auto"                                # Model for the albedo of the planet ("auto", "tellurics", "flat", "PICASO")
     instru_type        = instrument_concept['instru_type']     # Type of instrument ("IFU" or "imager")
     post_processing    = instrument_concept['postproc']        # Post-processing method ("MM" or "DI")
-    size_core          = 2                                     # [px/FWHM] Number of pixel per spatial FWHM along 1 direction (size_core >= 2 => Nyquist spatial sampling)
+    size_core          = 2                                     # Aperture size on which the signal is integrated [px]
+    spatial_sampling   = 2                                     # [px/FWHM] Number of pixel per spatial FWHM along 1 direction (spatial_sampling >= 2 => Nyquist spatial sampling)
     A_FWHM             = size_core**2                          # Number of pixel per FWHM box area
     Rc                 = 1_00                                  # MM cut-off resolution (Rc~100 is enough to reach ~1e-8 with speckles only, Rc~1000 would allows to go further (more conservative))
     filter_type        = "gaussian"                            # MM filter type
@@ -1265,27 +1286,21 @@ def main():
     sep_min = 0     # [mas]
     sep_max = 1_000 # [mas] max separation of the raw PSF data
 
-    # --- Post-AO wavefront error and IWA ---
+    # --- Relative post-AO WFE and coronagraphic FPM size ---
+    # r_WFE=1 means the nominal AO performance for each stellar V magnitude.
+    # IWA is the FPM radius in lambda0_band/D (not mas); the PCS nominal value is 2.4.
+    r_WFE_ref = 1.0        # [dimensionless]
+    IWA_ref   = 2.4        # [lambda0_band/D]
 
-    # reference values
-    WFE_ref = 50.026     # [nm RMS]
-    IWA_ref = 33.4 / 2   # [mas]
+    # Nominal PCS configuration. For sensitivity studies, vary within the FITS ranges.
+    r_WFE_min = r_WFE_ref
+    r_WFE_max = r_WFE_ref
+    IWA_min   = IWA_ref
+    IWA_max   = IWA_ref
 
-    # Fixed values
-    # Post-AO wavefront error
-    WFE_min          = WFE_ref        # [nm]
-    WFE_max          = WFE_ref        # [nm]
-    # Coronagraph inner working angle
-    IWA_min          = IWA_ref        # [mas]
-    IWA_max          = IWA_ref        # [mas]
-
-    # Vary WFE and IWA (HUGE files will be created!!)
-    # Post-AO wavefront error
-    # WFE_min          = 10             # [nm]
-    # WFE_max          = 200            # [nm]
-    # # Coronagraph inner working angle radius
-    # IWA_min          = 1              # [mas]
-    # IWA_max          = 100            # [mas]
+    # Exploratory (extrapolated) ranges:
+    # r_WFE_min, r_WFE_max = 0.2, 2.0
+    # IWA_min, IWA_max = 1.0, 5.0
 
     # --- IFU parameters space to explore ---
     if instru_type == "IFU":
@@ -1318,7 +1333,7 @@ def main():
         R                = np.logspace(np.log10(R_min),       np.log10(R_max),       N) # i dim
         l0               = np.linspace(l0_min,                l0_max,                N) # j dim
         Nl               = np.logspace(np.log10(Nl_min),      np.log10(Nl_max),      N) # k dim
-        WFE              = np.linspace(WFE_min,               WFE_max,               N) # l dim
+        r_WFE              = np.linspace(r_WFE_min,               r_WFE_max,               N) # l dim
         IWA              = np.logspace(np.log10(IWA_min),     np.log10(IWA_max),     N) # m dim
         trans_instru     = np.linspace(trans_instru_min,      trans_instru_max,      N) # n dim
         sigma_m          = np.logspace(np.log10(sigma_m_min), np.log10(sigma_m_max), N) # o dim
@@ -1329,7 +1344,7 @@ def main():
         R                = np.unique(R)
         l0               = np.unique(l0)
         Nl               = np.unique(Nl)
-        WFE              = np.unique(WFE)
+        r_WFE              = np.unique(r_WFE)
         IWA              = np.unique(IWA)
         trans_instru     = np.unique(trans_instru)
         sigma_m          = np.unique(sigma_m)
@@ -1338,7 +1353,7 @@ def main():
         N_R              = len(R)
         N_l0             = len(l0)
         N_Nl             = len(Nl)
-        N_WFE            = len(WFE)
+        N_r_WFE            = len(r_WFE)
         N_IWA            = len(IWA)
         N_TI             = len(trans_instru)
         N_SM             = len(sigma_m)
@@ -1373,7 +1388,7 @@ def main():
         # Axis
         l0               = np.linspace(l0_min,                l0_max,                N) # j dim
         Dl               = np.linspace(Dl_min,                Dl_max,                N) # k dim
-        WFE              = np.linspace(WFE_min,               WFE_max,               N) # l dim
+        r_WFE              = np.linspace(r_WFE_min,               r_WFE_max,               N) # l dim
         IWA              = np.logspace(np.log10(IWA_min),     np.log10(IWA_max),     N) # m dim
         trans_instru     = np.linspace(trans_instru_min,      trans_instru_max,      N) # n dim
         sigma_m          = np.logspace(np.log10(sigma_m_min), np.log10(sigma_m_max), N) # o dim
@@ -1381,7 +1396,7 @@ def main():
         # Axis must have unique and sorted values
         l0               = np.unique(l0)
         Dl               = np.unique(Dl)
-        WFE              = np.unique(WFE)
+        r_WFE              = np.unique(r_WFE)
         IWA              = np.unique(IWA)
         trans_instru     = np.unique(trans_instru)
         sigma_m          = np.unique(sigma_m)
@@ -1389,7 +1404,7 @@ def main():
         # Dimensions
         N_l0             = len(l0)
         N_Dl             = len(Dl)
-        N_WFE            = len(WFE)
+        N_r_WFE            = len(r_WFE)
         N_IWA            = len(IWA)
         N_TI             = len(trans_instru)
         N_SM             = len(sigma_m)
@@ -1444,8 +1459,22 @@ def main():
     N_PT               = len(planet_table)
     print(f"\nKeeping {N_PT}/{N_PT_raw} planets between {sep_min:.0f} and {sep_max:.0f} mas in thermal and reflected light")
 
+    if N_PT == 0:
+        raise ValueError("No planets remain after the separation selection")
+    # Fail before costly PSF computations if the input table lacks stellar V photometry.
+    vmag_check = np.array([get_star_vmag(planet) for planet in planet_table], dtype=float)
+    outside_vmag = (vmag_check < 0.0) | (vmag_check > 10.0)
+    if np.any(outside_vmag):
+        print(f"WARNING: {np.count_nonzero(outside_vmag)} stars are outside the simulated V=[0,10] range; "
+              "PSF magnitude interpolation will clamp to the nearest boundary")
+    print(f"PCS stellar V-band photometry: [{vmag_check.min():.2f}, {vmag_check.max():.2f}] mag")
+
     # Prints simulation parameters
-    print_simulation_summary(instru=instru, instru_type=instru_type, detector=detector, post_processing=post_processing, D=D, S=S, N_mirror=N_mirror, trans_dust=trans_dust, RON0=RON0, RON_lim=RON_lim, DC0=DC0, saturation_e=saturation_e, min_DIT=min_DIT, max_DIT=max_DIT, coronagraph=coronagraph, apodizer=apodizer, strehl=strehl, thermal_model=thermal_model, reflected_model=reflected_model, SNR_thr=SNR_thr, exposure_time=exposure_time, size_core=size_core, A_FWHM=A_FWHM, Rc=Rc if instru_type == "IFU" else None, filter_type=filter_type if instru_type == "IFU" else None, table_type=table_type, sep_min=sep_min, sep_max=sep_max, N_PT_raw=N_PT_raw, N_PT=N_PT, force_new_calc=force_new_calc, l0=l0, R=R if instru_type == "IFU" else None, Nl=Nl if instru_type == "IFU" else None, Dl=Dl if instru_type == "imager" else None, WFE=WFE, IWA=IWA, trans_instru=trans_instru, sigma_m=sigma_m, FoV=FoV)
+    print_simulation_summary(instru=instru, instru_type=instru_type, detector=detector, post_processing=post_processing, D=D, S=S, N_mirror=N_mirror, trans_dust=trans_dust, RON0=RON0, RON_lim=RON_lim, DC0=DC0, saturation_e=saturation_e, min_DIT=min_DIT, max_DIT=max_DIT, coronagraph=coronagraph, apodizer=apodizer, strehl=strehl, thermal_model=thermal_model, reflected_model=reflected_model, SNR_thr=SNR_thr, exposure_time=exposure_time, size_core=size_core, A_FWHM=A_FWHM, Rc=Rc if instru_type == "IFU" else None, filter_type=filter_type if instru_type == "IFU" else None, table_type=table_type, sep_min=sep_min, sep_max=sep_max, N_PT_raw=N_PT_raw, N_PT=N_PT, force_new_calc=force_new_calc, l0=l0, R=R if instru_type == "IFU" else None, Nl=Nl if instru_type == "IFU" else None, Dl=Dl if instru_type == "imager" else None, WFE=r_WFE, IWA=IWA, trans_instru=trans_instru, sigma_m=sigma_m, FoV=FoV)
+    # The shared legacy summary helper calls its argument 'WFE'; it receives r_WFE
+    # for API compatibility. Its WFE/IWA unit annotations are NOT authoritative here.
+    print(f"PCS PSF axes (authoritative): r_WFE={r_WFE} [dimensionless]; "
+          f"IWA={IWA} [lambda0_band/D]; mag_star=stellar V-band magnitude")
 
     # Build meta for YOUR case (IFU or imager)
     meta = dict(code_version=PCS_CODE_VERSION, dtype=str(dtype),
@@ -1460,10 +1489,10 @@ def main():
                 coronagraph=coronagraph, apodizer=apodizer, strehl=strehl, thermal_model=thermal_model, reflected_model=reflected_model, instru_type=instru_type, post_processing=post_processing, size_core=size_core, R_model=R_model, table_type=table_type,
 
                 # exploration space
-                l0_min=l0_min, l0_max=l0_max, WFE_min=WFE_min, WFE_max=WFE_max, IWA_min=IWA_min, IWA_max=IWA_max, trans_instru_min=trans_instru_min, trans_instru_max=trans_instru_max, sep_min=sep_min, sep_max=sep_max, N_PT=N_PT,
+                l0_min=l0_min, l0_max=l0_max, r_WFE_min=r_WFE_min, r_WFE_max=r_WFE_max, IWA_min=IWA_min, IWA_max=IWA_max, trans_instru_min=trans_instru_min, trans_instru_max=trans_instru_max, sep_min=sep_min, sep_max=sep_max, N_PT=N_PT,
 
                 # axis used
-                l0=l0, WFE=WFE, IWA=IWA, trans_instru=trans_instru,
+                l0=l0, r_WFE=r_WFE, IWA=IWA, trans_instru=trans_instru,
                 )
 
     if instru_type == "IFU":
@@ -1505,8 +1534,8 @@ def main():
     # Opening existing #
     ####################
     if not do_new:
-        # For IFU (7D):    (Planets, R, l0, Nl, WFE, IWA, trans_instru)
-        # For Imager (6D): (Planets,    l0, Dl, WFE, IWA, trans_instru)
+        # For IFU (7D):    (Planets, R, l0, Nl, r_WFE, IWA, trans_instru)
+        # For Imager (6D): (Planets,    l0, Dl, r_WFE, IWA, trans_instru)
         signal_planets       = np.load(signal_path,       mmap_mode="r") # [e-/FWHM/DIT]
         sigma_halo_2_planets = np.load(sigma_halo_2_path, mmap_mode="r") # [e-/FWHM/DIT]**2
         sigma_bkg_2_planets  = np.load(sigma_bkg_2_path,  mmap_mode="r") # [e-/FWHM/DIT]**2
@@ -1529,7 +1558,7 @@ def main():
             print(f"\nNew FastYield ELT/{instru} calculations (missing files).")
 
         #
-        # PSF data (PSF profile, fraction core and coronagraph transmission) preparations (l0, WFE, IWA, mag_star, sep)
+        # PSF data (PSF profile, fraction core and coronagraph transmission) preparations (l0, r_WFE, IWA, mag_star, sep)
         #
 
         # PSF_profile_density (no coronagraph) = mean surface-brightness density in each annular bin divided by the total flux (as function of angular separation)
@@ -1540,18 +1569,18 @@ def main():
         # radial_transmission (coronagraph) = total coronagraphic flux divided by total flux                                              (for different offset angular separation from the coronagraph, at 0 => on-axis)
 
         # Retrieving PSF data and axis (HARD CODED RANGES...)
-        l0_min_PSF              = 0.6   # [µm]
+        l0_min_PSF              = 0.5   # [µm]; exact PCS SUMMARY FITS suffix
         l0_max_PSF              = 2.5   # [µm]
-        WFE_min_PSF             = 10    # [nm]
-        WFE_max_PSF             = 200   # [nm]
-        IWA_min_PSF             = 1     # [mas]
-        IWA_max_PSF             = 100   # [mas]
+        r_WFE_min_PSF           = 0.2   # [dimensionless]
+        r_WFE_max_PSF           = 2.0   # [dimensionless]
+        IWA_min_PSF             = 1.0   # [lambda0_band/D]
+        IWA_max_PSF             = 5.0   # [lambda0_band/D]
         mag_star_min_PSF        = 0     # [dimensionless]
         mag_star_max_PSF        = 10    # [dimensionless]
         sep_max_PSF             = 1_000 # [mas]
-        suffix_PSF              = f"{apodizer}_{coronagraph}_{strehl}_{l0_min_PSF}_{l0_max_PSF}_{WFE_min_PSF}_{WFE_max_PSF}_{IWA_min_PSF}_{IWA_max_PSF}_{mag_star_min_PSF}_{mag_star_max_PSF}_{sep_max_PSF}"
+        suffix_PSF              = f"{apodizer}_{coronagraph}_{strehl}_{l0_min_PSF}_{l0_max_PSF}_{r_WFE_min_PSF}_{r_WFE_max_PSF}_{IWA_min_PSF}_{IWA_max_PSF}_{mag_star_min_PSF}_{mag_star_max_PSF}_{sep_max_PSF}"
         wave0                   = fits.getdata(psf_dir / f"{instru}_wave_{suffix_PSF}.fits")
-        WFE0                    = fits.getdata(psf_dir / f"{instru}_WFE_{suffix_PSF}.fits")
+        r_WFE0                  = fits.getdata(psf_dir / f"{instru}_r_WFE_{suffix_PSF}.fits")
         IWA0                    = fits.getdata(psf_dir / f"{instru}_IWA_{suffix_PSF}.fits")
         mag_star0               = fits.getdata(psf_dir / f"{instru}_mag_star_{suffix_PSF}.fits")
         separation0             = fits.getdata(psf_dir / f"{instru}_separation_{suffix_PSF}.fits")
@@ -1562,6 +1591,44 @@ def main():
         else:
             radial_transmission0_5D = None
 
+        # Contract with ELT_FastYield_PSF_profiles_PCS_new.py:
+        # wave [um], r_WFE [dimensionless], IWA [lambda0_band/D], mag_star [V], separation [mas].
+        axes_psf = (wave0, r_WFE0, IWA0, mag_star0, separation0)
+        names_psf = ("wave", "r_WFE", "IWA_lam0D", "Vmag", "separation_mas")
+        for name, axis in zip(names_psf, axes_psf):
+            if axis.ndim != 1 or not np.all(np.isfinite(axis)) or np.any(np.diff(axis) <= 0):
+                raise ValueError(f"Invalid PCS PSF coordinate axis {name}: expected increasing finite 1D values")
+        expected_psf_shape = tuple(len(axis) for axis in axes_psf)
+        for name, array in (("PSF_profile_density", PSF_profile_density0_5D),
+                            ("fraction_core", fraction_core0_5D),
+                            ("radial_transmission", radial_transmission0_5D)):
+            if array is not None and array.shape != expected_psf_shape:
+                raise ValueError(f"{name} has shape {array.shape}; expected {expected_psf_shape}")
+        for name, requested, available in (("wave", l0, wave0), ("r_WFE", r_WFE, r_WFE0),
+                                            ("IWA_lam0D", IWA, IWA0)):
+            if np.min(requested) < available[0] - 1e-6 or np.max(requested) > available[-1] + 1e-6:
+                raise ValueError(f"Requested {name} range is outside the PCS PSF input cube")
+        if not np.isclose(r_WFE0, 1.0).any() or not np.isclose(IWA0, 2.4).any():
+            raise ValueError("PCS PSF cube must contain the nominal r_WFE=1 and IWA=2.4 planes")
+        print("\nPCS PSF coordinates: r_WFE dimensionless, IWA in lambda0_band/D, stellar magnitude in V")
+
+        # The current PCS generator anchors stellar profiles at the nominal slice,
+        # but its extrapolated coronagraphic profiles may not remain unit-normalized.
+        # Report this explicitly: FastYield multiplies the PSF by T_star below.
+        sep_edges = np.empty(len(separation0) + 1, dtype=float)
+        sep_edges[0] = 0.0
+        sep_edges[1:-1] = 0.5 * (separation0[:-1] + separation0[1:])
+        sep_edges[-1] = separation0[-1] + 0.5 * (separation0[-1] - separation0[-2])
+        annulus_area = np.pi * np.diff(sep_edges**2)
+        iw_nom = int(np.argmin(np.abs(r_WFE0 - 1.0)))
+        ii_nom = int(np.argmin(np.abs(IWA0 - 2.4)))
+        for label, iw in (("nominal", iw_nom), ("lowest r_WFE", 0), ("highest r_WFE", len(r_WFE0)-1)):
+            integrals = np.sum(PSF_profile_density0_5D[:, iw, ii_nom, :, :] * annulus_area, axis=-1)
+            print(f"  {label} PSF integral range at IWA=2.4: [{integrals.min():.4g}, {integrals.max():.4g}]")
+            if coronagraph is not None and not np.allclose(integrals, 1.0, rtol=0.05, atol=0.05):
+                print("  WARNING: PSF is not normalized at this r_WFE; "
+                      "T_star * PSF integral, not T_star alone, is the effective stellar throughput")
+
         # Keeping the raw mag_star and separation axis
         mag_star   = mag_star0.astype(dtype,   copy=False)
         separation = separation0.astype(dtype, copy=False)
@@ -1569,19 +1636,19 @@ def main():
         N_sep      = len(separation)
 
         # Temporary PSF memmaps
-        PSF_profile_5D     = create_memmap_with_log(PSF_profile_5D_tmp_path,     shape=(N_l0, N_WFE, N_IWA, N_mag_star, N_sep), dtype=dtype, mode="w+")
-        fraction_core_5D   = create_memmap_with_log(fraction_core_5D_tmp_path,   shape=(N_l0, N_WFE, N_IWA, N_mag_star, N_sep), dtype=dtype, mode="w+")
-        PSF_profile_max_4D = create_memmap_with_log(PSF_profile_max_4D_tmp_path, shape=(N_l0, N_WFE, N_IWA, N_mag_star),        dtype=dtype, mode="w+",)
+        PSF_profile_5D     = create_memmap_with_log(PSF_profile_5D_tmp_path,     shape=(N_l0, N_r_WFE, N_IWA, N_mag_star, N_sep), dtype=dtype, mode="w+")
+        fraction_core_5D   = create_memmap_with_log(fraction_core_5D_tmp_path,   shape=(N_l0, N_r_WFE, N_IWA, N_mag_star, N_sep), dtype=dtype, mode="w+")
+        PSF_profile_max_4D = create_memmap_with_log(PSF_profile_max_4D_tmp_path, shape=(N_l0, N_r_WFE, N_IWA, N_mag_star),        dtype=dtype, mode="w+",)
 
         # Build interpolators once
         eps_pos  = np.finfo(dtype).tiny
         eps01    = 1e-32
         safe_pos = lambda x: np.clip(x, eps_pos, None)
         safe01   = lambda x: np.clip(x, eps01, 1 - eps01)
-        log_interp_psf      = RegularGridInterpolator((wave0, WFE0, IWA0, mag_star0, separation0), np.log(safe_pos(PSF_profile_density0_5D)), bounds_error=True)
-        logit_interp_core   = RegularGridInterpolator((wave0, WFE0, IWA0, mag_star0, separation0), logit(safe01(fraction_core0_5D)),          bounds_error=True)
+        log_interp_psf      = RegularGridInterpolator((wave0, r_WFE0, IWA0, mag_star0, separation0), np.log(safe_pos(PSF_profile_density0_5D)), bounds_error=True)
+        logit_interp_core   = RegularGridInterpolator((wave0, r_WFE0, IWA0, mag_star0, separation0), logit(safe01(fraction_core0_5D)),          bounds_error=True)
         if coronagraph is not None:
-            logit_interp_rt = RegularGridInterpolator((wave0, WFE0, IWA0, mag_star0, separation0), logit(safe01(radial_transmission0_5D)),    bounds_error=True)
+            logit_interp_rt = RegularGridInterpolator((wave0, r_WFE0, IWA0, mag_star0, separation0), logit(safe01(radial_transmission0_5D)),    bounds_error=True)
         else:
             logit_interp_rt = None
 
@@ -1590,7 +1657,7 @@ def main():
         for j0 in tqdm(range(0, N_l0, l0_chunk), desc="Building temporary PSF memmaps"):
             j1           = min(j0 + l0_chunk, N_l0)
             l0_chunk_arr = l0[j0:j1]
-            pts          = np.stack(np.meshgrid(l0_chunk_arr, WFE, IWA, mag_star, separation, indexing="ij"), axis=-1)
+            pts          = np.stack(np.meshgrid(l0_chunk_arr, r_WFE, IWA, mag_star, separation, indexing="ij"), axis=-1)
 
             # Interpolating over current grid
             PSF_profile_density_blk     = np.exp(log_interp_psf(pts))
@@ -1604,7 +1671,7 @@ def main():
             if (np.any(~np.isfinite(PSF_profile_density_blk)) or np.any(~np.isfinite(fraction_core_blk)) or (coronagraph is not None and np.any(~np.isfinite(radial_transmission_blk)))):
                 raise KeyError("The PSF data should only have finite values!")
 
-            # Converting flux density in fraction of flux inside the FOV per spaxel for a bin at l0, WFE, IWA, mag_star as function of separation
+            # Converting flux density in fraction of flux inside the FOV per spaxel for a bin at l0, r_WFE, IWA, mag_star as function of separation
             PSF_profile_blk = PSF_profile_density_blk * pxscales[j0:j1, None, None, None, None]**2 # [star flux fraction/px]
 
             # Star transmission throught coronagraph, given at sep = 0, on-axis, assuming that the coronagraph is perfectly align with the star
@@ -1613,11 +1680,11 @@ def main():
                 i_sep0 = 0
                 if separation[i_sep0] != 0.0:
                     raise KeyError("The first value of 'separation' should be 0.")
-                star_transmission_blk = radial_transmission_blk[..., i_sep0] # (l0c, WFE, IWA, mag_star)
+                star_transmission_blk = radial_transmission_blk[..., i_sep0] # (l0c, r_WFE, IWA, mag_star)
                 # Star PSF profile throught the coronagraph
-                PSF_profile_blk      *= star_transmission_blk[..., None]     # (l0c, WFE, IWA, mag_star, sep)
+                PSF_profile_blk      *= star_transmission_blk[..., None]     # (l0c, r_WFE, IWA, mag_star, sep)
                 # Fraction core signal (for the planet, inside the FWHM) through the coronagraph
-                fraction_core_blk    *= radial_transmission_blk              # (l0c, WFE, IWA, mag_star, sep)
+                fraction_core_blk    *= radial_transmission_blk              # (l0c, r_WFE, IWA, mag_star, sep)
 
             PSF_profile_5D[j0:j1]   = PSF_profile_blk.astype(dtype,   copy=False)
             fraction_core_5D[j0:j1] = fraction_core_blk.astype(dtype, copy=False)
@@ -1635,16 +1702,16 @@ def main():
                 del star_transmission_blk
             gc.collect()
 
-        # PSF_profile_5D(l0, WFE, IWA, mag_star, separation)   = [star flux fraction/px]     = star flux per px divided by the total star flux          (as function of angular separation)
-        # fraction_core_5D(l0, WFE, IWA, mag_star, separation) = [planet flux fraction/FWHM] = planet flux inside FWHM divided by the total planet flux (constant with separation if no coronagraph, or for different angular separation from the coronagraph)
-        # PSF_profile_max_4D(l0, WFE, IWA, mag_star)           = [max star flux fraction/px] = max star flux per px divided by the total star flux      (given at the brightest position)
+        # PSF_profile_5D(l0, r_WFE, IWA, mag_star, separation)   = [star flux fraction/px]     = star flux per px divided by the total star flux          (as function of angular separation)
+        # fraction_core_5D(l0, r_WFE, IWA, mag_star, separation) = [planet flux fraction/FWHM] = planet flux inside FWHM divided by the total planet flux (constant with separation if no coronagraph, or for different angular separation from the coronagraph)
+        # PSF_profile_max_4D(l0, r_WFE, IWA, mag_star)           = [max star flux fraction/px] = max star flux per px divided by the total star flux      (given at the brightest position)
 
         PSF_profile_5D.flush()
         fraction_core_5D.flush()
         PSF_profile_max_4D.flush()
 
         # Free raw PSF arrays as soon as temp memmaps are built
-        del wave0, WFE0, IWA0, mag_star0, separation0
+        del wave0, r_WFE0, IWA0, mag_star0, separation0
         del PSF_profile_density0_5D, fraction_core0_5D
         if radial_transmission0_5D is not None:
             del radial_transmission0_5D
@@ -1667,7 +1734,7 @@ def main():
         counts_vega_K   = get_counts_from_density(wave=wave_K, density=vega_spectrum_K.flux)
 
         # Vega zeropoints [J/s/m2/µm] (for star magnitues computations)
-        vega_flux_1D = vega_spectrum.interpolate_wavelength(l0, renorm=False).flux # [J/s/m2/µm]
+
 
         # Global model-bandwidth (with constant dl step, must be evenly spaced in order to create the model spectra, for the rotationnal broadening with Vsini)
         lmin_model = 0.98*l0_min                                 # [µm] a bit larger for doppler shifts and to avoid edge effects
@@ -1780,14 +1847,14 @@ def main():
 
 
             # --- Global context worker ---
-            _IFU_CTX = dict(planet_table=planet_table, l0=l0, A_FWHM=A_FWHM, separation=separation, thermal_model=thermal_model, reflected_model=reflected_model, post_processing=post_processing, wave_model=wave_model, wave_instru=wave_instru, wave_K=wave_K, counts_vega_K=counts_vega_K, vega_flux_1D=vega_flux_1D, mag_star=mag_star, scale_spectrum=scale_spectrum, N_R=N_R, N_l0=N_l0, N_Nl=N_Nl, R=R, wave_1D_list=wave_1D_list, dwave_1D_list=dwave_1D_list, trans_tell_tel_1D_list=trans_tell_tel_1D_list, trans_instru=trans_instru, background_1D_list=background_1D_list, pxscales=pxscales, Rc=Rc, filter_type=filter_type, range_1D_list=range_1D_list, saturation_e=saturation_e, min_DIT=min_DIT, max_DIT=max_DIT, PSF_profile_5D_path=str(PSF_profile_5D_tmp_path), fraction_core_5D_path=str(fraction_core_5D_tmp_path), PSF_profile_max_4D_path=str(PSF_profile_max_4D_tmp_path), signal_path=str(signal_path), sigma_halo_2_path=str(sigma_halo_2_path), sigma_bkg_2_path=str(sigma_bkg_2_path), DIT_path=str(DIT_path), sigma_syst_base_2_path=str(sigma_syst_base_2_path), dtype=dtype, D=D, pxscales_rad=pxscales_rad)
+            _IFU_CTX = dict(planet_table=planet_table, l0=l0, A_FWHM=A_FWHM, separation=separation, thermal_model=thermal_model, reflected_model=reflected_model, post_processing=post_processing, wave_model=wave_model, wave_instru=wave_instru, wave_K=wave_K, counts_vega_K=counts_vega_K, mag_star=mag_star, scale_spectrum=scale_spectrum, N_R=N_R, N_l0=N_l0, N_Nl=N_Nl, R=R, wave_1D_list=wave_1D_list, dwave_1D_list=dwave_1D_list, trans_tell_tel_1D_list=trans_tell_tel_1D_list, trans_instru=trans_instru, background_1D_list=background_1D_list, pxscales=pxscales, Rc=Rc, filter_type=filter_type, range_1D_list=range_1D_list, saturation_e=saturation_e, min_DIT=min_DIT, max_DIT=max_DIT, PSF_profile_5D_path=str(PSF_profile_5D_tmp_path), fraction_core_5D_path=str(fraction_core_5D_tmp_path), PSF_profile_max_4D_path=str(PSF_profile_max_4D_tmp_path), signal_path=str(signal_path), sigma_halo_2_path=str(sigma_halo_2_path), sigma_bkg_2_path=str(sigma_bkg_2_path), DIT_path=str(DIT_path), sigma_syst_base_2_path=str(sigma_syst_base_2_path), dtype=dtype, D=D, pxscales_rad=pxscales_rad)
 
 
             # --- Arguments for Pool ---
             init_worker  = init_worker_IFU
             _CTX         = _IFU_CTX
             func_process = process_IFU
-            shape_SNR    = (N_PT, N_R, N_l0, N_Nl, N_WFE, N_IWA, N_TI)
+            shape_SNR    = (N_PT, N_R, N_l0, N_Nl, N_r_WFE, N_IWA, N_TI)
             tqdm_desc    = f"ELT/{instru} ({instru_type} and {post_processing}) multiprocessing over planets of signal, stellar halo photon noise, DIT length and base for {residuals} noise"
 
 
@@ -1821,13 +1888,13 @@ def main():
             background_flux_2D *= pxscales[:, None]**2                                                          # [ph/mn/mas2] => [ph/px/mn]
 
             # --- Global context worker ---
-            _IM_CTX = dict(planet_table=planet_table, l0=l0, A_FWHM=A_FWHM, separation=separation, thermal_model=thermal_model, reflected_model=reflected_model, post_processing=post_processing, wave_instru=wave_instru, wave_K=wave_K, counts_vega_K=counts_vega_K, vega_flux_1D=vega_flux_1D, mag_star=mag_star, scale_spectrum=scale_spectrum, N_l0=N_l0, N_Dl=N_Dl, trans_instru=trans_instru, trans_tell_tel=trans_tell_tel.flux, background_flux_2D=background_flux_2D, range_1D=range_1D, saturation_e=saturation_e, min_DIT=min_DIT, max_DIT=max_DIT, PSF_profile_5D_path=str(PSF_profile_5D_tmp_path), fraction_core_5D_path=str(fraction_core_5D_tmp_path), PSF_profile_max_4D_path=str(PSF_profile_max_4D_tmp_path), signal_path=str(signal_path), sigma_halo_2_path=str(sigma_halo_2_path), sigma_bkg_2_path=str(sigma_bkg_2_path), DIT_path=str(DIT_path), dtype=dtype)
+            _IM_CTX = dict(planet_table=planet_table, l0=l0, A_FWHM=A_FWHM, separation=separation, thermal_model=thermal_model, reflected_model=reflected_model, post_processing=post_processing, wave_instru=wave_instru, wave_K=wave_K, counts_vega_K=counts_vega_K, mag_star=mag_star, scale_spectrum=scale_spectrum, N_l0=N_l0, N_Dl=N_Dl, trans_instru=trans_instru, trans_tell_tel=trans_tell_tel.flux, background_flux_2D=background_flux_2D, range_1D=range_1D, saturation_e=saturation_e, min_DIT=min_DIT, max_DIT=max_DIT, PSF_profile_5D_path=str(PSF_profile_5D_tmp_path), fraction_core_5D_path=str(fraction_core_5D_tmp_path), PSF_profile_max_4D_path=str(PSF_profile_max_4D_tmp_path), signal_path=str(signal_path), sigma_halo_2_path=str(sigma_halo_2_path), sigma_bkg_2_path=str(sigma_bkg_2_path), DIT_path=str(DIT_path), dtype=dtype)
 
             # --- Arguments for Pool ---
             init_worker  = init_worker_IM
             _CTX         = _IM_CTX
             func_process = process_IM
-            shape_SNR    = (N_PT, N_l0, N_Dl, N_WFE, N_IWA, N_TI)
+            shape_SNR    = (N_PT, N_l0, N_Dl, N_r_WFE, N_IWA, N_TI)
             tqdm_desc    = f"ELT/{instru} ({instru_type} and {post_processing}) multiprocessing over planets of signal, stellar halo photon noise and DIT length"
 
 
@@ -1902,25 +1969,25 @@ def main():
 
     # Define parameters and their names
     if instru_type == "IFU":
-        params         = [R,                           l0,                                                Nl,                                           WFE,                           IWA,                        trans_instru,                                    100*sigma_m,                                         FoV]                    # params axis
-        params_ranges  = [(R.min(), R.max()),          (l0.min(), l0.max()),                              (Nl.min(), Nl.max()),                         (WFE_ref, WFE_ref),            (IWA_ref, IWA_ref),         (trans_instru.min(), trans_instru.max()),        ((100*sigma_m).min(), (100*sigma_m).min()),          (FoV.max(), FoV.max())] # params ranges for marginalization
-        #params_ranges  = [(R.min(), R.max()),          (l0.min(), l0.max()),                              (Nl.max(), Nl.max()),                         (WFE_ref, WFE_ref),            (IWA_ref, IWA_ref),         (trans_instru.max(), trans_instru.max()),        ((100*sigma_m).min(), (100*sigma_m).min()),          (FoV.max(), FoV.max())] # params ranges for marginalization
+        params         = [R,                           l0,                                                Nl,                                           r_WFE,                           IWA,                        trans_instru,                                    100*sigma_m,                                         FoV]                    # params axis
+        params_ranges  = [(R.min(), R.max()),          (l0.min(), l0.max()),                              (Nl.min(), Nl.max()),                         (r_WFE_ref, r_WFE_ref),            (IWA_ref, IWA_ref),         (trans_instru.min(), trans_instru.max()),        ((100*sigma_m).min(), (100*sigma_m).min()),          (FoV.max(), FoV.max())] # params ranges for marginalization
+        #params_ranges  = [(R.min(), R.max()),          (l0.min(), l0.max()),                              (Nl.max(), Nl.max()),                         (r_WFE_ref, r_WFE_ref),            (IWA_ref, IWA_ref),         (trans_instru.max(), trans_instru.max()),        ((100*sigma_m).min(), (100*sigma_m).min()),          (FoV.max(), FoV.max())] # params ranges for marginalization
         params_priors  = ["log-uniform",               "uniform",                                         "log-uniform",                                "uniform",                     "log-uniform",              "uniform",                                       "log-uniform",                                       "log-uniform"]          # params priors for marginalization
         params_islog   = [True,                        False,                                             True,                                         False,                         True,                       False,                                           True,                                                True]                   # params space (linspace or logspace)
         params_isint   = [True,                        False,                                             True,                                         False,                         False,                      False,                                           False,                                               True]                   # params rounded format
-        params_names   = ["R",                         "l0 [µm]",                                         "Nl",                                         "WFE [nm]",                    "IWA [mas]",                "trans_instru [e-/ph]",                          "sigma_m [%]",                                       "FoV [mas]"]            # params names
-        params_names_l = [r"$R$",                      r"$\lambda_0$  [µm]",                              r"$N_{\lambda}$",                             r"$WFE$ [nm]",                r"IWA [mas]",                r"$\gamma_{instru}$ [e-/ph]",                    r"$\sigma_m$ [%]",                                  r"$FoV$ [mas]"]          # params labels
-        params_names_L = [r"Spectral resolution $R$",  r"Bandwidth central wavelength $\lambda_0$ [µm]",  r"Number of spectral channel $N_{\lambda}$",  r"Post-AO ${WFE}$ [nm RMS]",  r"Coronagraph $IWA$ [mas]",  r"Instrumental transmission $\gamma_{instru}$",  rf"{residuals} residual amplitude $\sigma_m$ [%]",  r"Field of View [mas]"]  # params detailed labels
+        params_names   = ["R",                         "l0 [µm]",                                         "Nl",                                         "r_WFE",                    "IWA [lambda0/D]",                "trans_instru [e-/ph]",                          "sigma_m [%]",                                       "FoV [mas]"]            # params names
+        params_names_l = [r"$R$",                      r"$\lambda_0$  [µm]",                              r"$N_{\lambda}$",                             r"$r_{\mathrm{WFE}}$",                r"IWA [lambda0/D]",                r"$\gamma_{instru}$ [e-/ph]",                    r"$\sigma_m$ [%]",                                  r"$FoV$ [mas]"]          # params labels
+        params_names_L = [r"Spectral resolution $R$",  r"Bandwidth central wavelength $\lambda_0$ [µm]",  r"Number of spectral channel $N_{\lambda}$",  r"Relative AO WFE $r_{\mathrm{WFE}}$",  r"Coronagraph FPM radius [$\lambda_{0,\mathrm{band}}/D$]",  r"Instrumental transmission $\gamma_{instru}$",  rf"{residuals} residual amplitude $\sigma_m$ [%]",  r"Field of View [mas]"]  # params detailed labels
 
     elif instru_type == "imager":
-        params         = [l0,                                                Dl,                                         WFE,                                          IWA,                                                 trans_instru,                                    100*sigma_m,                                        FoV]                    # params axis
-        params_ranges  = [(l0.min(), l0.max()),                              (Dl.min(), Dl.max()),                       (WFE_ref, WFE_ref),                           (IWA_ref, IWA_ref),                                  (trans_instru.min(), trans_instru.max()),        ((100*sigma_m).min(), (100*sigma_m).min()),         (FoV.max(), FoV.max())] # params ranges for marginalization
+        params         = [l0,                                                Dl,                                         r_WFE,                                          IWA,                                                 trans_instru,                                    100*sigma_m,                                        FoV]                    # params axis
+        params_ranges  = [(l0.min(), l0.max()),                              (Dl.min(), Dl.max()),                       (r_WFE_ref, r_WFE_ref),                           (IWA_ref, IWA_ref),                                  (trans_instru.min(), trans_instru.max()),        ((100*sigma_m).min(), (100*sigma_m).min()),         (FoV.max(), FoV.max())] # params ranges for marginalization
         params_priors  = ["uniform",                                         "uniform",                                  "uniform",                                    "log-uniform",                                      "uniform",                                       "log-uniform",                                       "log-uniform"]          # params priors for marginalization
         params_islog   = [False,                                             False,                                      False,                                        True,                                                False,                                           True,                                                True]                  # params space (linspace or logspace)
         params_isint   = [False,                                             False,                                      False,                                        False,                                               False,                                           False,                                               False]                 # params rounded format
-        params_names   = ["l0 [µm]",                                         "Dl [µm]",                                  "WFE [nm]",                                   "IWA [mas]",                                         "trans_instru",                                  "sigma_m [%]",                                       "FoV"]                 # params labels
-        params_names_l = [r"$\lambda_0$ [µm]",                               r"$\Delta\lambda$ [µm]",                    r"$WFE$ [nm]",                                r"$IWA$ [mas]",                                      r"$\gamma_{instru}$ [e-/ph]",                    r"$\sigma_m$ [%]",                                  r"FoV [mas]"]           # params labels
-        params_names_L = [r"Bandwidth central wavelength $\lambda_0$ [µm]",  r"Spectral coverage $\Delta\lambda$ [µm]",  r"Post-AO wavefront error ${WFE}$ [nm RMS]",  r"Coronagraph focal plane mask radius $IWA$ [mas]",  r"Instrumental transmission $\gamma_{instru}$",  rf"{residuals} residual amplitude $\sigma_m$ [%]",  r"Field of View [mas]"] # params detailed labels
+        params_names   = ["l0 [µm]",                                         "Dl [µm]",                                  "r_WFE",                                   "IWA [lambda0/D]",                                         "trans_instru",                                  "sigma_m [%]",                                       "FoV"]                 # params labels
+        params_names_l = [r"$\lambda_0$ [µm]",                               r"$\Delta\lambda$ [µm]",                    r"$r_{\mathrm{WFE}}$",                                r"$IWA$ [$\lambda_{0,\mathrm{band}}/D$]",                                      r"$\gamma_{instru}$ [e-/ph]",                    r"$\sigma_m$ [%]",                                  r"FoV [mas]"]           # params labels
+        params_names_L = [r"Bandwidth central wavelength $\lambda_0$ [µm]",  r"Spectral coverage $\Delta\lambda$ [µm]",  r"Relative AO WFE $r_{\mathrm{WFE}}$",  r"Coronagraph FPM radius [$\lambda_{0,\mathrm{band}}/D$]",  r"Instrumental transmission $\gamma_{instru}$",  rf"{residuals} residual amplitude $\sigma_m$ [%]",  r"Field of View [mas]"] # params detailed labels
 
 
 
@@ -1928,8 +1995,8 @@ def main():
     # COMPUTING MAIN QUANTITIES
 
     # Computing the SNR and detection mask (SNR > SNR_thr) for each planet
-    # For IFU (8D):    (planets, R, l0, Nl, WFE, IWA, trans_instru, sigma_m)
-    # For Imager (7D): (planets,    l0, Dl, WFE, IWA, trans_instru, sigma_m)
+    # For IFU (8D):    (planets, R, l0, Nl, r_WFE, IWA, trans_instru, sigma_m)
+    # For Imager (7D): (planets,    l0, Dl, r_WFE, IWA, trans_instru, sigma_m)
     SNR_planets     = get_SNR(instru=instru, instru_type=instru_type, post_processing=post_processing, exposure_time=exposure_time, min_DIT=min_DIT, RON0=RON0, RON_lim=RON_lim, DC0=DC0, A_FWHM=A_FWHM, Rc=Rc, filter_type=filter_type, signal_planets=signal_planets, sigma_halo_2_planets=sigma_halo_2_planets, sigma_bkg_2_planets=sigma_bkg_2_planets, sigma_syst_base_2_planets=sigma_syst_base_2_planets, DIT_planets=DIT_planets, R=R if instru_type == "IFU" else None, Nl=Nl if instru_type == "IFU" else None, sigma_m=sigma_m, sim_dir=sim_dir_concept, suffix=suffix, dtype=dtype)
     mask_detections = get_mask_detections(SNR_planets=SNR_planets, SNR_thr=SNR_thr, sim_dir=sim_dir_concept, suffix=suffix)
 
@@ -1937,8 +2004,8 @@ def main():
     p0_FoV = np.searchsorted(FoV / 2, separation_planets, side="left").astype(np.int32)
 
     # Getting ndim detection probability
-    # For IFU (8D):    (R, l0, Nl, WFE, IWA, trans_instru, sigma_m, FoV)
-    # For Imager (7D): (   l0, Dl, WFE, IWA, trans_instru, sigma_m, FoV)
+    # For IFU (8D):    (R, l0, Nl, r_WFE, IWA, trans_instru, sigma_m, FoV)
+    # For Imager (7D): (   l0, Dl, r_WFE, IWA, trans_instru, sigma_m, FoV)
     Pdet = get_Pdet(mask_detections=mask_detections, FoV=FoV, p0_FoV=p0_FoV, dtype=dtype)
 
     # --- Removing useless dimensions ---
@@ -1967,8 +2034,8 @@ def main():
     ncols = min(2, Ndim)
     nrows = int(np.ceil(Ndim / ncols))
 
-    # Plot order: display WFE and IWA in the last panels when present
-    dims_last  = [next((idim for idim, name in enumerate(params_names) if key in name), None) for key in ("WFE", "IWA")]
+    # Plot order: display r_WFE and IWA in the last panels when present
+    dims_last  = [next((idim for idim, name in enumerate(params_names) if key in name), None) for key in ("r_WFE", "IWA")]
     dims_last  = [idim for idim in dims_last if idim is not None]
     plot_order = [idim for idim in range(Ndim) if idim not in dims_last] + dims_last
 
@@ -2129,7 +2196,7 @@ def main():
                 ax.set_xlabel(params_names_l[idim], fontsize=14)
                 if params_isint[idim]:
                     ax.set_title(f"{params_names_l[idim]} = {round(params_max[idim], -2):.0f}", fontsize=11)
-                elif params_islog[idim] and params_names[idim] != "IWA [mas]":
+                elif params_islog[idim] and params_names[idim] != "IWA [lambda0/D]":
                     ax.set_title(f"{params_names_l[idim]} = {params_max[idim]:.1e}", fontsize=11)
                 else:
                     ax.set_title(f"{params_names_l[idim]} = {params_max[idim]:.2f}", fontsize=11)
@@ -2246,15 +2313,15 @@ def main():
             ax.axvline(x0, c="k", ls="--", lw=lw)
             ax.annotate("Optimistic on-sky DI", xy=(x0, 0.5), xycoords=("data", "axes fraction"), xytext=(6, 0), textcoords="offset points", rotation=270, va="center", ha="left", fontsize=fontsize+4, color="k", bbox=dict(boxstyle="round,pad=0.2", fc="white", ec="gray", alpha=0.85), zorder=5, clip_on=True)
 
-        # WFE and IWA ref values
-        if params_names[idim] == "WFE [nm]":
-            x0 = WFE_ref # [nm]
+        # r_WFE and IWA ref values
+        if params_names[idim] == "r_WFE":
+            x0 = r_WFE_ref # [dimensionless]
             ax.axvline(x0, c="k", ls="--", lw=lw)
-            ax.annotate("Expected WFE at Q2", xy=(x0, 0.5), xycoords=("data", "axes fraction"), xytext=(6, 0), textcoords="offset points", rotation=270, va="center", ha="left", fontsize=fontsize+4, color="k", bbox=dict(boxstyle="round,pad=0.2", fc="white", ec="gray", alpha=0.85), zorder=5, clip_on=True)
-        if params_names[idim] == "IWA [mas]":
-            x0 = IWA_ref  # [mas]
+            ax.annotate("Nominal PCS AO performance (r_WFE=1)", xy=(x0, 0.5), xycoords=("data", "axes fraction"), xytext=(6, 0), textcoords="offset points", rotation=270, va="center", ha="left", fontsize=fontsize+4, color="k", bbox=dict(boxstyle="round,pad=0.2", fc="white", ec="gray", alpha=0.85), zorder=5, clip_on=True)
+        if params_names[idim] == "IWA [lambda0/D]":
+            x0 = IWA_ref  # [lambda0_band/D]
             ax.axvline(x0, c="k", ls="--", lw=lw)
-            ax.annotate("ANDES coronagraph", xy=(x0, 0.5), xycoords=("data", "axes fraction"), xytext=(6, 0), textcoords="offset points", rotation=270, va="center", ha="left", fontsize=fontsize+4, color="k", bbox=dict(boxstyle="round,pad=0.2", fc="white", ec="gray", alpha=0.85), zorder=5, clip_on=True)
+            ax.annotate("PCS nominal FPM", xy=(x0, 0.5), xycoords=("data", "axes fraction"), xytext=(6, 0), textcoords="offset points", rotation=270, va="center", ha="left", fontsize=fontsize+4, color="k", bbox=dict(boxstyle="round,pad=0.2", fc="white", ec="gray", alpha=0.85), zorder=5, clip_on=True)
 
     # Turn off unused panels
     for k in range(Ndim, nrows * ncols):
@@ -2380,15 +2447,15 @@ def main():
                 ax.axvline(x0, c="k", ls="--", lw=lw)
                 ax.annotate("Optimistic on-sky DI", xy=(x0, 0.5), xycoords=("data", "axes fraction"), xytext=(6, 0), textcoords="offset points", rotation=270, va="center", ha="left", fontsize=fontsize+4, color="k", bbox=dict(boxstyle="round,pad=0.2", fc="white", ec="gray", alpha=0.85), zorder=5, clip_on=True)
 
-            # WFE and IWA ref values
-            if params_names[idim] == "WFE [nm]":
-                x0 = WFE_ref # [nm]
+            # r_WFE and IWA ref values
+            if params_names[idim] == "r_WFE":
+                x0 = r_WFE_ref # [dimensionless]
                 ax.axvline(x0, c="k", ls="--", lw=lw)
-                ax.annotate("Expected WFE at Q2", xy=(x0, 0.5), xycoords=("data", "axes fraction"), xytext=(6, 0), textcoords="offset points", rotation=270, va="center", ha="left", fontsize=fontsize+4, color="k", bbox=dict(boxstyle="round,pad=0.2", fc="white", ec="gray", alpha=0.85), zorder=5, clip_on=True)
-            if params_names[idim] == "IWA [mas]":
-                x0 = IWA_ref  # [mas]
+                ax.annotate("Nominal PCS AO performance (r_WFE=1)", xy=(x0, 0.5), xycoords=("data", "axes fraction"), xytext=(6, 0), textcoords="offset points", rotation=270, va="center", ha="left", fontsize=fontsize+4, color="k", bbox=dict(boxstyle="round,pad=0.2", fc="white", ec="gray", alpha=0.85), zorder=5, clip_on=True)
+            if params_names[idim] == "IWA [lambda0/D]":
+                x0 = IWA_ref  # [lambda0_band/D]
                 ax.axvline(x0, c="k", ls="--", lw=lw)
-                ax.annotate("ANDES coronagraph", xy=(x0, 0.5), xycoords=("data", "axes fraction"), xytext=(6, 0), textcoords="offset points", rotation=270, va="center", ha="left", fontsize=fontsize+4, color="k", bbox=dict(boxstyle="round,pad=0.2", fc="white", ec="gray", alpha=0.85), zorder=5, clip_on=True)
+                ax.annotate("PCS nominal FPM", xy=(x0, 0.5), xycoords=("data", "axes fraction"), xytext=(6, 0), textcoords="offset points", rotation=270, va="center", ha="left", fontsize=fontsize+4, color="k", bbox=dict(boxstyle="round,pad=0.2", fc="white", ec="gray", alpha=0.85), zorder=5, clip_on=True)
 
         # Turn off unused panels
         for k in range(Ndim, nrows * ncols):
@@ -2522,8 +2589,8 @@ def main():
     l0_plot           = 1.23 #1.5               # [µm]
     Nl_plot           = 500 #[1_000, 100_000]  # [bins]
     Dl_plot           = 0.5               # [µm]
-    WFE_plot          = WFE_ref           # [nm RMS]
-    IWA_plot          = IWA_ref           # [mas]
+    r_WFE_plot          = r_WFE_ref           # [dimensionless]
+    IWA_plot          = IWA_ref           # [lambda0_band/D]
     trans_instru_plot = 0.25 #[0.1, 0.5]        # [e-/ph]
     sigma_m_plot      = [1e-1, 1e-0]              # [%]
     FoV_plot          = 2000              # [mas]
@@ -2536,8 +2603,8 @@ def main():
     # Parameter ranges used specifically for population diagnostics
     params_ranges_pop = [tuple(rng) for rng in params_ranges]
     if snr_population_mode == "personalized":
-        personalized_ranges = {"R": R_plot, "l0": l0_plot, "Nl": Nl_plot, "Dl": Dl_plot, "WFE": WFE_plot, "IWA": IWA_plot, "trans_instru": trans_instru_plot, "sigma_m": sigma_m_plot, "FoV": FoV_plot}
-        allowed_keys        = {"IFU": {"R", "l0", "Nl", "WFE", "IWA", "trans_instru", "sigma_m", "FoV"}, "imager": {"l0", "Dl", "WFE", "IWA", "trans_instru", "sigma_m", "FoV"}}[instru_type]
+        personalized_ranges = {"R": R_plot, "l0": l0_plot, "Nl": Nl_plot, "Dl": Dl_plot, "r_WFE": r_WFE_plot, "IWA": IWA_plot, "trans_instru": trans_instru_plot, "sigma_m": sigma_m_plot, "FoV": FoV_plot}
+        allowed_keys        = {"IFU": {"R", "l0", "Nl", "r_WFE", "IWA", "trans_instru", "sigma_m", "FoV"}, "imager": {"l0", "Dl", "r_WFE", "IWA", "trans_instru", "sigma_m", "FoV"}}[instru_type]
         def format_range(r):
             return f"{r[0]:g}" if np.isclose(r[0], r[1]) else f"[{r[0]:g}, {r[1]:g}]"
         def format_value(value):
