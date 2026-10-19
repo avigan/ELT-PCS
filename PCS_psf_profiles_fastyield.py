@@ -577,7 +577,6 @@ _, _, _, star_transmission_2D, _ = build_reference_coronagraph_products(
 print("\nSpatial Strehl / Marechal WFE estimates (not independently measured):")
 for mag, wfe in zip(mag_star, WFE_nm_1D):
     print(f"  V = {mag:>4.1f}  ->  WFE = {wfe:7.3f} nm RMS")
-print(f"  Historical Q2 bright-star reference = {WFE_MAG000_ANCHOR:.3f} nm RMS (comparison only)")
 if np.any(np.diff(WFE_nm_1D) < -1e-8):
     print("WARNING: estimated WFE is not monotonic with magnitude")
 if not np.all(np.isfinite(WFE_nm_1D)) or np.any(WFE_nm_1D <= 0):
