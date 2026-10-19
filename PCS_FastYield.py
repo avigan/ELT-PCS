@@ -1254,7 +1254,7 @@ def main():
     strehl             = "Q2"                                  # Sky atmospheric condition (1st quartile, 2nd, etc.)
     SNR_thr            = 5                                     # Detection threshold
     exposure_time      = 10*60                                 # Total exposure time per planet [mn]
-    force_new_calc     = True                                  # Forcing new simulations calculations
+    force_new_calc     = False                                 # Forcing new simulations calculations
     thermal_model      = "auto"                                # Model for the thermal spectrum of the planet ("auto", "None", "BT-Settl", "Exo-REM", "SONORA", "PICASO", "Saumon", etc.)
     reflected_model    = "auto"                                # Model for the albedo of the planet ("auto", "tellurics", "flat", "PICASO")
     instru_type        = instrument_concept['instru_type']     # Type of instrument ("IFU" or "imager")
@@ -2572,13 +2572,13 @@ def main():
     # Personalized ranges: scalar = fixed value, [min,max] = marginalized range, None = keep default params_ranges
     R_plot            = 2900 #[30_000, 100_000] # [dimensionless]
     l0_plot           = 1.23 #1.5               # [µm]
-    Nl_plot           = 500 #[1_000, 100_000]  # [bins]
+    Nl_plot           = 500 #[1_000, 100_000]   # [bins]
     Dl_plot           = 0.5               # [µm]
-    r_WFE_plot          = r_WFE_ref           # [dimensionless]
+    r_WFE_plot        = r_WFE_ref         # [dimensionless]
     IWA_plot          = IWA_ref           # [lambda0_band/D]
-    trans_instru_plot = 0.25 #[0.1, 0.5]        # [e-/ph]
-    sigma_m_plot      = [1e-1, 1e-0]              # [%]
-    FoV_plot          = 2000              # [mas]
+    trans_instru_plot = 0.25 #[0.1, 0.5]  # [e-/ph]
+    sigma_m_plot      = 1e-1              # [%]
+    FoV_plot          = 1000              # [mas]
 
     idx_FoV      = next(idx for idx, name in enumerate(params_names) if "FoV"     in name)
     idx_sigma_m  = next(idx for idx, name in enumerate(params_names) if "sigma_m" in name)
