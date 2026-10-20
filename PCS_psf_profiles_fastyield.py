@@ -710,5 +710,3 @@ for mode in coronagraph_modes:
 
 print("\nDone.")
 print(f"FastYield PSF inputs written to: {output_dir}")
-print("Current PCS_FastYield.py configuration apodizer='NO_SP', coronagraph='LYOT' will use the CLC products.")
-print("To use the APLC products generated here, set apodizer='APLC', coronagraph='LYOT' in PCS_FastYield.py.")
