@@ -1,5 +1,5 @@
 # instrument concept D:  VIS-NIR imager
-# V ➙ K, FoV > 1000 mas
+# V âž™ K, FoV > 1000 mas
 instru_type: imager
 postproc: DI
 

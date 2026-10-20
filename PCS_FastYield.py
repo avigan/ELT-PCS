@@ -63,10 +63,7 @@ def get_star_vmag(planet):
             if np.isfinite(value):
                 return value
             break
-    raise ValueError(
-        f"Missing valid stellar V magnitude for planet row. Columns: {list(colnames)}. "
-        "PCS MAGxxx is defined in V; a wavelength-dependent pseudo-magnitude is not valid."
-    )
+    raise ValueError(f"Missing valid stellar V magnitude for planet row. Columns: {list(colnames)}. PCS MAGxxx is defined in V; a wavelength-dependent pseudo-magnitude is not valid.")
 
 
 # Parameters for multiprocessing
@@ -162,7 +159,7 @@ def window_sums_1d(values, idx_lo, idx_hi):
     values : ndarray, shape (Nwave,)
         1D array to integrate.
     idx_lo, idx_hi : ndarray
-        Integer arrays with the same shape, defining integration windows (l0, Nl) for IFU or (l0, Dl) for imager.
+        Integer arrays with the same shape, defining integration windows (l0, Dl) for IFU or (l0, Dl) for imager.
 
     Returns
     -------
@@ -199,10 +196,44 @@ def window_nanmax_1d(values, idx_lo, idx_hi):
             out[ind] = 0.0
     return out
 
+def get_valid_IFU_windows(R, l0, Dl, Nl_max, Nl_min=3):
+    """
+    Return the validity mask for the (R, l0, Dl) parameter grid.
+
+    The spectral sampling is the same as in process_IFU:
+    dln(lambda) = 1 / (2*R), corresponding to 2 pixels per
+    spectral resolution element.
+
+    Returns
+    -------
+    valid_windows_3D : bool array, shape (R, l0, Dl)
+    """
+    lmin = l0[:, None] - Dl[None, :] / 2
+    lmax = l0[:, None] + Dl[None, :] / 2
+    if np.any(lmin <= 0):
+        raise ValueError("IFU spectral windows must have positive wavelengths.")
+    # Same wavelength-grid origin as in the main IFU calculations.
+    lmin_model       = 0.98 * (l0.min() - Dl.max()/2)
+    lmax_model       = 1.02 * (l0.max() + Dl.max()/2)
+    valid_windows_3D = np.zeros((len(R), len(l0), len(Dl)), dtype=bool)
+    print(f"Valid windows: {Nl_min} <= Nl <= {Nl_max if Nl_max is not None else 'unlimited'}")
+    for i, res in enumerate(R):
+        dln        = 1.0 / (2.0 * res)
+        n          = int(np.floor(np.log(lmax_model/lmin_model)/dln)) + 1
+        wave_res   = lmin_model * np.exp(np.arange(n)*dln)
+        idx_lo     = np.searchsorted(wave_res, lmin, side="left")
+        idx_hi     = np.searchsorted(wave_res, lmax, side="right")
+        n_channels = idx_hi - idx_lo
+        valid      = n_channels >= Nl_min
+        if Nl_max is not None:
+            valid &= n_channels <= Nl_max
+        valid_windows_3D[i] = valid
+        print(f"R={res:.0f}: {np.count_nonzero(valid)}/{valid.size} valid configurations")
+    return valid_windows_3D
+
 def warmup_signal_noise_numba(dtype):
     """
     Compile/load the Numba covariance kernels before multiprocessing.
-
     On Linux, the compiled functions are inherited by forked workers, which avoids
     paying the compilation/loading overhead independently in every worker.
     """
@@ -288,7 +319,7 @@ def process_IFU(idx):
     scale_spectrum         = _IFU_CTX["scale_spectrum"]
     N_R                    = _IFU_CTX["N_R"]
     N_l0                   = _IFU_CTX["N_l0"]
-    N_Nl                   = _IFU_CTX["N_Nl"]
+    N_Dl                   = _IFU_CTX["N_Dl"]
     R                      = _IFU_CTX["R"]
     wave_1D_list           = _IFU_CTX["wave_1D_list"]
     dwave_1D_list          = _IFU_CTX["dwave_1D_list"]
@@ -299,6 +330,7 @@ def process_IFU(idx):
     Rc                     = _IFU_CTX["Rc"]
     filter_type            = _IFU_CTX["filter_type"]
     range_1D_list          = _IFU_CTX["range_1D_list"]
+    valid_windows_3D       = _IFU_CTX["valid_windows_3D"]
     saturation_e           = _IFU_CTX["saturation_e"]
     min_DIT                = _IFU_CTX["min_DIT"]
     max_DIT                = _IFU_CTX["max_DIT"]
@@ -347,23 +379,33 @@ def process_IFU(idx):
     planet_spectrum.flux *= scale_spectrum # [J/s/m²/µm] => [ph/mn/µm]
 
 
-    # --- Computing data depending only on R, l0 and Nl ---
+    # --- Computing data depending only on R, l0 and Dl ---
     # These quantities do not yet include the spatial PSF factors or
     # the instrumental throughput axis.  They are pure spectral quantities,
-    # computed once for each (R, l0, Nl) combination and later broadcast over
+    # computed once for each (R, l0, Dl) combination and later broadcast over
     # (C_raw, IWA_lD, trans_instru).
-    signal_3D            = np.zeros((N_R, N_l0, N_Nl), dtype=dtype) # = alpha - beta                         (R, l0, Nl) [ph/mn]
-    sigma_halo_2_3D      = np.zeros((N_R, N_l0, N_Nl), dtype=dtype) # = sum (trans * S_star * template**2)   (R, l0, Nl) [ph/mn]
-    max_star_flux_3D     = np.zeros((N_R, N_l0, N_Nl), dtype=dtype) # = max (trans * S_star)                 (R, l0, Nl) [ph/mn/bin]
-    sigma_bkg_2_3D       = np.zeros((N_R, N_l0, N_Nl), dtype=dtype) # = sum (background * template**2)       (R, l0, Nl) [ph/px/mn]
-    sigma_syst_base_2_3D = np.zeros((N_R, N_l0, N_Nl), dtype=dtype) # = sigma_syst,base**2                   (R, l0, Nl) [ph/mn]**2
+    signal_3D            = np.zeros((N_R, N_l0, N_Dl), dtype=dtype) # = alpha - beta                         (R, l0, Dl) [ph/mn]
+    sigma_halo_2_3D      = np.zeros((N_R, N_l0, N_Dl), dtype=dtype) # = sum (trans * S_star * template**2)   (R, l0, Dl) [ph/mn]
+    max_star_flux_3D     = np.zeros((N_R, N_l0, N_Dl), dtype=dtype) # = max (trans * S_star)                 (R, l0, Dl) [ph/mn/bin]
+    sigma_bkg_2_3D       = np.zeros((N_R, N_l0, N_Dl), dtype=dtype) # = sum (background * template**2)       (R, l0, Dl) [ph/px/mn]
+    sigma_syst_base_2_3D = np.zeros((N_R, N_l0, N_Dl), dtype=dtype) # = sigma_syst,base**2                   (R, l0, Dl) [ph/mn]**2
     for i, res in enumerate(R):
+        
+        valid_windows_i = valid_windows_3D[i]
+        if not np.any(valid_windows_i):
+            signal_3D[i]            = np.nan
+            sigma_halo_2_3D[i]      = np.nan
+            max_star_flux_3D[i]     = np.nan
+            sigma_bkg_2_3D[i]       = np.nan
+            sigma_syst_base_2_3D[i] = np.nan
+            continue
+                
         wave_i           = wave_1D_list[i]
         dwave_i          = dwave_1D_list[i]
         trans_tell_tel_i = trans_tell_tel_1D_list[i]
         star_i           = star_spectrum.degrade_resolution(wave_i,   renorm=False, R_output=res).flux # [ph/mn/µm]
         planet_i         = planet_spectrum.degrade_resolution(wave_i, renorm=False, R_output=res).flux # [ph/mn/µm]
-        idx_lo, idx_hi   = range_1D_list[i] # (l0, Nl)
+        idx_lo, idx_hi   = range_1D_list[i] # (l0, Dl)
 
         # Converting in [ph/mn/bin]
         # The degraded spectra are still densities [ph/mn/um]; multiplying by
@@ -396,10 +438,10 @@ def process_IFU(idx):
             #     t_ijk = T_i[sl] / sqrt(sum_sl(T_i**2))
             T_i               = trans_tell_tel_i * planet_HF_i                            # (wave_res)
             T2_i              = T_i**2                                                    # (wave_res)
-            norm2_2D          = window_sums_1d(values=T2_i, idx_lo=idx_lo, idx_hi=idx_hi) # (l0, Nl)
-            valid_2D          = np.isfinite(norm2_2D) & (norm2_2D > 0)                    # (l0, Nl)
-            norm_2D           = np.zeros_like(norm2_2D, dtype=dtype)                      # (l0, Nl)
-            norm_2D[valid_2D] = np.sqrt(norm2_2D[valid_2D])                               # (l0, Nl)
+            norm2_2D          = window_sums_1d(values=T2_i, idx_lo=idx_lo, idx_hi=idx_hi) # (l0, Dl)
+            valid_2D          = valid_windows_i & np.isfinite(norm2_2D) & (norm2_2D > 0)  # (l0, Dl)
+            norm_2D           = np.zeros_like(norm2_2D, dtype=dtype)                      # (l0, Dl)
+            norm_2D[valid_2D] = np.sqrt(norm2_2D[valid_2D])                               # (l0, Dl)
 
             # CCF signal computation in [ph/mn], before multiplying by
             # the spatial PSF throughput and instrumental efficiency.
@@ -418,10 +460,10 @@ def process_IFU(idx):
             #     t_ijk = T_i[sl] / sqrt(sum_sl(T_i**2))
             T_i               = trans_tell_tel_i * planet_i                               # (wave_res)
             T2_i              = T_i**2                                                    # (wave_res)
-            norm2_2D          = window_sums_1d(values=T2_i, idx_lo=idx_lo, idx_hi=idx_hi) # (l0, Nl)
-            valid_2D          = np.isfinite(norm2_2D) & (norm2_2D > 0)                    # (l0, Nl)
-            norm_2D           = np.zeros_like(norm2_2D, dtype=float)                      # (l0, Nl)
-            norm_2D[valid_2D] = np.sqrt(norm2_2D[valid_2D])                               # (l0, Nl)
+            norm2_2D          = window_sums_1d(values=T2_i, idx_lo=idx_lo, idx_hi=idx_hi) # (l0, Dl)
+            valid_2D          = valid_windows_i & np.isfinite(norm2_2D) & (norm2_2D > 0)  # (l0, Dl)
+            norm_2D           = np.zeros_like(norm2_2D, dtype=float)                      # (l0, Dl)
+            norm_2D[valid_2D] = np.sqrt(norm2_2D[valid_2D])                               # (l0, Dl)
 
             # CCF/integrated signal computation in [ph/mn], before PSF and throughput factors.
             # delta = sum(trans*planet*t) = sum(T*t) = sum(T*T/norm) = norm**2/norm = norm
@@ -444,8 +486,8 @@ def process_IFU(idx):
 
         # Background photon noise in [ph/px/mn]**2
         background_i           = background_1D_list[i]                                                    # (wave_res) [ph/mn/bin/mas2]
-        sigma_bkg_num_2D       = window_sums_1d(values=background_i * T2_i, idx_lo=idx_lo, idx_hi=idx_hi) # (l0, Nl)   [ph/mn/mas2]
-        sigma_bkg_num_2D      *= pxscales[:, None]**2                                                     # (l0, Nl)   [ph/mn/mas2] => [ph/px/mn]
+        sigma_bkg_num_2D       = window_sums_1d(values=background_i * T2_i, idx_lo=idx_lo, idx_hi=idx_hi) # (l0, Dl)   [ph/mn/mas2]
+        sigma_bkg_num_2D      *= pxscales[:, None]**2                                                     # (l0, Dl)   [ph/mn/mas2] => [ph/px/mn]
         sigma_bkg_2D           = np.zeros_like(norm2_2D, dtype=float)
         sigma_bkg_2D[valid_2D] = sigma_bkg_num_2D[valid_2D] / norm2_2D[valid_2D]
         sigma_bkg_2_3D[i]      = sigma_bkg_2D.astype(dtype)
@@ -457,7 +499,7 @@ def process_IFU(idx):
         # loop only for sigma_syst_base_2.
         for j in range(N_l0):
             pxscale_rad = pxscales_rad[j]
-            for k in range(N_Nl):
+            for k in range(N_Dl):
                 if not valid_2D[j, k]:
                     sigma_syst_base_2_3D[i, j, k] = 0.0
                     continue
@@ -484,93 +526,99 @@ def process_IFU(idx):
                     sigma_base_2_al_spat          = compute_sigma_base_2_al_spat_numba(h=h_PP_c, wave=wave_c, separation_rad=separation_planet_rad_arr, pxscale_rad=pxscale_rad)[0]
                     sigma_base_2_al_spec          = compute_sigma_base_2_al_spec_fast(h=h_PP_native)[0]
                     sigma_syst_base_2_3D[i, j, k] = 0.5 * (sigma_base_2_al_spec + sigma_base_2_al_spat)
+        
+        invalid                          = ~valid_windows_i
+        signal_3D[i, invalid]            = np.nan
+        sigma_halo_2_3D[i, invalid]      = np.nan
+        max_star_flux_3D[i, invalid]     = np.nan
+        sigma_bkg_2_3D[i, invalid]       = np.nan
+        sigma_syst_base_2_3D[i, invalid] = np.nan
 
-
-    # --- Computing DIT length in [mn/DIT] (R, l0, Nl, r_WFE, IWA, TI) ---
+    # --- Computing DIT length in [mn/DIT] (R, l0, Dl, r_WFE, IWA, TI) ---
 
     # max_star_flux in [ph/px/mn/bin] in the brightest pixel and bin (through coronagraph, if any):
     # [total star ph/mn/bin] in the brightest bin * [star flux fraction/px] in the brightest pixel => [ph/px/mn/bin] in the brightest pixel and bin
-    # (R, l0, Nl, 1, 1)                           * (1, l0, 1, r_WFE, IWA)                           => (R, l0, Nl, r_WFE, IWA)
+    # (R, l0, Dl, 1, 1)                           * (1, l0, 1, r_WFE, IWA)                           => (R, l0, Dl, r_WFE, IWA)
     max_star_flux_5D = max_star_flux_3D[:, :, :, None, None] * PSF_profile_max_3D[None, :, None, :, :]
 
     # max_star_flux in [e-/px/mn/bin] in the brightest pixel with instrumental transmission (through coronagraph, if any):
     # [ph/px/mn/bin] in the brightest pixel and bin * [e-/ph]             => [e-/px/mn/bin] in the brightest pixel and bin
-    # (R, l0, Nl, r_WFE, IWA, 1)                      * (1, 1, 1, 1, 1, TI) => (R, l0, Nl, r_WFE, IWA, TI)
+    # (R, l0, Dl, r_WFE, IWA, 1)                      * (1, 1, 1, 1, 1, TI) => (R, l0, Dl, r_WFE, IWA, TI)
     max_star_flux_6D = max_star_flux_5D[:, :, :, :, :, None] * trans_instru[None, None, None, None, None, :]
 
     # Computing DIT length in [mn/DIT] (+ clipping between min and max DIT)
     saturation_e_6D = saturation_e[None, :, None, None, None, None]
     min_DIT_6D      = min_DIT[None, :, None, None, None, None]
     max_DIT_6D      = max_DIT[None, :, None, None, None, None]
-    DIT_6D          = saturation_e_6D / max_star_flux_6D # (R, l0, Nl, r_WFE, IWA, TI) [mn/DIT]
-    DIT_6D          = np.maximum(DIT_6D, min_DIT_6D)     # (R, l0, Nl, r_WFE, IWA, TI) [mn/DIT]
-    DIT_6D          = np.minimum(DIT_6D, max_DIT_6D)     # (R, l0, Nl, r_WFE, IWA, TI) [mn/DIT]
+    DIT_6D          = saturation_e_6D / max_star_flux_6D # (R, l0, Dl, r_WFE, IWA, TI) [mn/DIT]
+    DIT_6D          = np.maximum(DIT_6D, min_DIT_6D)     # (R, l0, Dl, r_WFE, IWA, TI) [mn/DIT]
+    DIT_6D          = np.minimum(DIT_6D, max_DIT_6D)     # (R, l0, Dl, r_WFE, IWA, TI) [mn/DIT]
 
 
-    # --- Computing signal in [e-/FWHM/DIT] (R, l0, Nl, r_WFE, IWA, TI) ---
+    # --- Computing signal in [e-/FWHM/DIT] (R, l0, Dl, r_WFE, IWA, TI) ---
 
     # Signal at the planet's separation inside the FWHM in [ph/FWHM/mn] (throught coronagraph, if any)
     # [total planet ph/mn] * [planet flux fraction/FWHM] => [ph/FWHM/mn]
-    # (R, l0, Nl, 1, 1)    * (1, l0, 1, r_WFE, IWA)        => (R, l0, Nl, r_WFE, IWA)
+    # (R, l0, Dl, 1, 1)    * (1, l0, 1, r_WFE, IWA)        => (R, l0, Dl, r_WFE, IWA)
     signal_5D = signal_3D[:, :, :, None, None] * fraction_core_sep_3D[None, :, None, :, :]
 
     # Signal at the planet's separation inside the FWHM in [e-/FWHM/mn] with instrumental transmission (throught coronagraph, if any)
     # [ph/FWHM/mn]             * [e-/ph]             => [e-/FWHM/mn]
-    # (R, l0, Nl, r_WFE, IWA, 1) * (1, 1, 1, 1, 1, TI) => (R, l0, Nl, r_WFE, IWA, TI)
+    # (R, l0, Dl, r_WFE, IWA, 1) * (1, 1, 1, 1, 1, TI) => (R, l0, Dl, r_WFE, IWA, TI)
     signal_6D = signal_5D[:, :, :, :, :, None] * trans_instru[None, None, None, None, None, :]
 
     # Signal at the planet's separation inside the FWHM in [e-/FWHM/DIT] with instrumental transmission integrated over the DIT (throught coronagraph, if any)
     # [e-/FWHM/mn]              * [mn/DIT]                  => [e-/FWHM/DIT]
-    # (R, l0, Nl, r_WFE, IWA, TI) * (R, l0, Nl, r_WFE, IWA, TI) => (R, l0, Nl, r_WFE, IWA, TI)
+    # (R, l0, Dl, r_WFE, IWA, TI) * (R, l0, Dl, r_WFE, IWA, TI) => (R, l0, Dl, r_WFE, IWA, TI)
     signal_6D = signal_6D * DIT_6D
 
 
-    # --- Computing stellar halo photon noise variance (Poisson) in [e-/FWHM/DIT] (R, l0, Nl, r_WFE, IWA, TI) ---
+    # --- Computing stellar halo photon noise variance (Poisson) in [e-/FWHM/DIT] (R, l0, Dl, r_WFE, IWA, TI) ---
 
     # Stellar halo photon noise variance (Poisson) at the planet's separation in [ph/px/mn] (throught coronagraph, if any)
     # [total star ph/mn] * [star flux fraction/px] => [ph/px/mn]
-    # (R, l0, Nl, 1, 1)  * (1, l0, 1, r_WFE, IWA)    => (R, l0, Nl, r_WFE, IWA)
+    # (R, l0, Dl, 1, 1)  * (1, l0, 1, r_WFE, IWA)    => (R, l0, Dl, r_WFE, IWA)
     sigma_halo_2_5D = sigma_halo_2_3D[:, :, :, None, None] * PSF_profile_sep_3D[None, :, None, :, :]
 
     # Stellar halo photon noise variance (Poisson) at the planet's separation in [e-/px/mn] with instrumental transmission (throught coronagraph, if any)
     # [ph/px/mn]               * [e-/ph]             => [e-/px/mn]
-    # (R, l0, Nl, r_WFE, IWA, 1) * (1, 1, 1, 1, 1, TI) => (R, l0, Nl, r_WFE, IWA, TI)
+    # (R, l0, Dl, r_WFE, IWA, 1) * (1, 1, 1, 1, 1, TI) => (R, l0, Dl, r_WFE, IWA, TI)
     sigma_halo_2_6D = sigma_halo_2_5D[:, :, :, :, :, None] * trans_instru[None, None, None, None, None, :]
 
     # Stellar halo photon noise variance (Poisson) at the planet's separation in [e-/FWHM/DIT] with instrumental transmission integrated over the DIT and the FWHM (quadrature addition assuming statistical independance) (throught coronagraph, if any)
     # [e-/px/mn]                * [px/FWHM]*[mn/DIT]        => [e-/FWHM/DIT]
-    # (R, l0, Nl, r_WFE, IWA, TI) * (R, l0, Nl, r_WFE, IWA, TI) => (R, l0, Nl, r_WFE, IWA, TI)
+    # (R, l0, Dl, r_WFE, IWA, TI) * (R, l0, Dl, r_WFE, IWA, TI) => (R, l0, Dl, r_WFE, IWA, TI)
     sigma_halo_2_6D = sigma_halo_2_6D * A_FWHM*DIT_6D
 
 
-    # --- Computing stellar halo systematic noise variance (at sigma_m = 1) in [e-/FWHM/DIT]**2 (R, l0, Nl, r_WFE, IWA, TI) (all quantities are squared since sigma_syst**2 propto stellar_halo**2) ---
+    # --- Computing stellar halo systematic noise variance (at sigma_m = 1) in [e-/FWHM/DIT]**2 (R, l0, Dl, r_WFE, IWA, TI) (all quantities are squared since sigma_syst**2 propto stellar_halo**2) ---
 
     # Stellar halo systematic noise variance at the planet's separation in [ph/px/mn]**2 (throught coronagraph, if any)
     # [total star ph/mn]**2 * [star flux fraction/px]**2 => [ph/px/mn]**2
-    # (R, l0, Nl, 1, 1)     * (1, l0, 1, r_WFE, IWA)       => (R, l0, Nl, r_WFE, IWA)
+    # (R, l0, Dl, 1, 1)     * (1, l0, 1, r_WFE, IWA)       => (R, l0, Dl, r_WFE, IWA)
     sigma_syst_base_2_5D = sigma_syst_base_2_3D[:, :, :, None, None] * PSF_profile_sep_3D[None, :, None, :, :]**2
 
     # Stellar halo systematic noise variance at the planet's separation in [e-/px/mn]**2 with instrumental transmission (throught coronagraph, if any)
     # [ph/px/mn]**2            * [e-/ph]**2          => [e-/px/mn]**2
-    # (R, l0, Nl, r_WFE, IWA, 1) * (1, 1, 1, 1, 1, TI) => (R, l0, Nl, r_WFE, IWA, TI)
+    # (R, l0, Dl, r_WFE, IWA, 1) * (1, 1, 1, 1, 1, TI) => (R, l0, Dl, r_WFE, IWA, TI)
     sigma_syst_base_2_6D = sigma_syst_base_2_5D[:, :, :, :, :, None] * trans_instru[None, None, None, None, None, :]**2
 
     # Stellar halo systematic noise variance at the planet's separation in [e-/px/mn]**2 with instrumental transmission integrated over the DIT and the FWHM (throught coronagraph, if any) (we take A_FWHM**2 * DIT**2 since sigma_syst_base_2 propto H_integrated**2 propto A_FWHM**2*DIT**2, where H_integrated = the halo integrated over FWHM boxes and the DIT)
     # [e-/px/mn]**2             * [px/FWHM]**2*[mn/DIT]**2  => [e-/FWHM/DIT]**2
-    # (R, l0, Nl, r_WFE, IWA, TI) * (R, l0, Nl, r_WFE, IWA, TI) => (R, l0, Nl, r_WFE, IWA, TI)
+    # (R, l0, Dl, r_WFE, IWA, TI) * (R, l0, Dl, r_WFE, IWA, TI) => (R, l0, Dl, r_WFE, IWA, TI)
     sigma_syst_base_2_6D = sigma_syst_base_2_6D * A_FWHM**2*DIT_6D**2
 
 
-    # --- Computing background photon noise variance (Poisson) in [e-/FWHM/DIT] (R, l0, Nl, r_WFE, IWA, TI) ---
+    # --- Computing background photon noise variance (Poisson) in [e-/FWHM/DIT] (R, l0, Dl, r_WFE, IWA, TI) ---
 
     # Background photon noise variance (Poisson) in [e-/px/mn] with instrumental transmission
     # [ph/px/mn]     * [e-/ph]       => [e-/px/mn]
-    # (R, l0, Nl, 1) * (1, 1, 1, TI) => (R, l0, Nl, TI)
+    # (R, l0, Dl, 1) * (1, 1, 1, TI) => (R, l0, Dl, TI)
     sigma_bkg_2_4D = sigma_bkg_2_3D[:, :, :, None] * trans_instru[None, None, None, :]
 
     # Background photon noise variance (Poisson) in [e-/FWHM/DIT] with instrumental transmission integrated over the DIT and the FWHM (quadrature addition assuming statistical independance)
     # [e-/px/mn]            * [px/FWHM]*[mn/DIT]        => [e-/FWHM/DIT]
-    # (R, l0, Nl, 1, 1, TI) * (R, l0, Nl, r_WFE, IWA, TI) => (R, l0, Nl, r_WFE, IWA, TI)
+    # (R, l0, Dl, 1, 1, TI) * (R, l0, Dl, r_WFE, IWA, TI) => (R, l0, Dl, r_WFE, IWA, TI)
     sigma_bkg_2_6D = sigma_bkg_2_4D[:, :, :, None, None, :] * A_FWHM*DIT_6D
 
 
@@ -808,7 +856,7 @@ def process_SNR(idx):
 
 
 
-def get_SNR(instru, instru_type, post_processing, exposure_time, min_DIT, RON0, RON_lim, DC0, A_FWHM, Rc, filter_type, signal_planets, sigma_halo_2_planets, sigma_bkg_2_planets, sigma_syst_base_2_planets, DIT_planets, R, Nl, sigma_m, sim_dir, suffix, dtype):
+def get_SNR(instru, instru_type, post_processing, exposure_time, min_DIT, RON0, RON_lim, DC0, A_FWHM, Rc, filter_type, signal_planets, sigma_halo_2_planets, sigma_bkg_2_planets, sigma_syst_base_2_planets, DIT_planets, R, Dl, sigma_m, sim_dir, suffix, dtype):
 
     print("\nComputing SNR from FastYield data...\n")
 
@@ -900,7 +948,7 @@ def get_mask_detections(SNR_planets, SNR_thr, sim_dir, suffix, target_chunk_mb=2
 # Function for computing detection probability
 # --------------------------------------------
 
-def get_Pdet(mask_detections, FoV, p0_FoV, dtype, indices=None, target_chunk_mb=2048, jump_before_tqdm=True):
+def get_Pdet(mask_detections, FoV, p0_FoV, dtype, indices=None, target_chunk_mb=2048, jump_before_tqdm=True, valid_windows_3D=None):
     # If no subset is provided, all planets are included
     if indices is None:
         indices = np.arange(len(p0_FoV), dtype=np.int32)
@@ -910,19 +958,24 @@ def get_Pdet(mask_detections, FoV, p0_FoV, dtype, indices=None, target_chunk_mb=
 
     shape_grid = mask_detections.shape[1:]  # (...grid..., sigma_m)
     N_FoV      = len(FoV)
-
+    
+    def apply_validity_mask(Pdet):
+        if valid_windows_3D is not None:
+            Pdet[~valid_windows_3D] = np.nan
+        return Pdet
+    
     # buckets[..., p] = sum of detection masks for planets with gating index p0 = p
     buckets = np.zeros(shape_grid + (N_FoV,), dtype=np.uint32)
 
     if N_PT == 0:
-        return buckets.astype(dtype)
+        return apply_validity_mask(buckets.astype(dtype))
 
     # Precompute FoV gating once
     p0_sel = p0_FoV[indices]
     valid  = (p0_sel < N_FoV)
 
     if not np.any(valid):
-        return buckets.astype(dtype)
+        return apply_validity_mask(buckets.astype(dtype))
 
     indices_valid = indices[valid]
     p0_valid      = p0_sel[valid]
@@ -953,7 +1006,7 @@ def get_Pdet(mask_detections, FoV, p0_FoV, dtype, indices=None, target_chunk_mb=
     # A planet with gating index p0 contributes to all FoV bins with index >= p0
     N_detections = np.cumsum(buckets, axis=-1)
 
-    return (N_detections / N_PT).astype(dtype)
+    return apply_validity_mask((N_detections / N_PT).astype(dtype))
 
 
 
@@ -973,7 +1026,6 @@ def get_axis_weights_in_range(axis, pmin, pmax, prior):
     axis = np.asarray(axis, dtype=float)
     pmin = float(pmin)
     pmax = float(pmax)
-
     if axis.ndim != 1:
         raise ValueError("axis must be 1D.")
     if len(axis) == 0:
@@ -982,9 +1034,7 @@ def get_axis_weights_in_range(axis, pmin, pmax, prior):
         raise ValueError("axis must be strictly increasing.")
     if pmin > pmax:
         raise ValueError("pmin must be <= pmax.")
-
     tol = 1e-10 * max(1.0, abs(pmin), abs(pmax), abs(axis[0]), abs(axis[-1]))
-
     if pmin < axis[0] - tol or pmax > axis[-1] + tol:
         raise ValueError(f"Requested range [{pmin:g}, {pmax:g}] is outside axis range [{axis[0]:g}, {axis[-1]:g}].")
 
@@ -1018,7 +1068,6 @@ def get_axis_weights_in_range(axis, pmin, pmax, prior):
         edges   = np.array([xmin, xmax], dtype=float)
         weights = np.array([xmax - xmin], dtype=float)
         return np.array([0], dtype=int), weights
-
     edges       = np.empty(len(x) + 1, dtype=float)
     edges[1:-1] = 0.5 * (x[:-1] + x[1:])
     edges[0]    = x[0]  - 0.5 * (x[1]  - x[0])
@@ -1028,7 +1077,6 @@ def get_axis_weights_in_range(axis, pmin, pmax, prior):
     left    = np.maximum(edges[:-1], xmin)
     right   = np.minimum(edges[1:],  xmax)
     weights = np.maximum(right - left, 0.0)
-
     idx     = np.where(weights > 0)[0]
     weights = weights[idx]
 
@@ -1070,56 +1118,61 @@ def interp_along_axis(values, axis, x0, axis_id):
     x_left  = axis[i0]
     x_right = axis[i1]
     alpha   = (x0 - x_left) / (x_right - x_left)
-
-    v0 = np.take(values, i0, axis=axis_id)
-    v1 = np.take(values, i1, axis=axis_id)
+    v0      = np.take(values, i0, axis=axis_id)
+    v1      = np.take(values, i1, axis=axis_id)
 
     return (1.0 - alpha) * v0 + alpha * v1
 
 
 
-def reduce_hcube(hcube, dims_to_keep, params, params_ranges, params_priors, params_names, verbose=False):
+
+
+def reduce_hcube(hcube, dims_to_keep, params, params_ranges, params_priors, params_names, verbose=False, dtype=None):
     """
-    Reduce a hcube grid by fixing and/or marginalizing parameters.
+    Reduce an N-dimensional grid by fixing and/or marginalizing parameters.
+
+    Invalid configurations (NaN or Inf) contribute neither values nor weights.
+    Numerator and denominator are reduced independently and normalized only
+    once, ensuring correct joint marginalization over correlated validity domains.
+
+    The input dtype is preserved by default to limit memory consumption.
 
     Parameters
     ----------
     hcube : ndarray
-        Detection probability grid.
-        Axis order must match the order of 'params' / 'params_names'.
+        N-dimensional grid (e.g. detection probability or SNR).
     dims_to_keep : list of int
-        Dimensions of parameters to keep in the final reduced hcube.
+        Indices of the dimensions to preserve.
     params : list of 1D arrays
-        Example:
-            [R, l0, Nl, r_WFE, IWA, trans_instru, sigma_m, FoV]
-    params_ranges : list of tuple
-        One entry per parameter, same order as 'params'.
-        Each entry must be (pmin, pmax).
-        - if pmin == pmax : fix parameter by linear interpolation
-        - if pmin <  pmax : marginalize parameter over [pmin, pmax]
+        Parameter axes, in the same order as hcube dimensions.
+    params_ranges : list of tuples
+        (pmin, pmax) for each parameter:
+        - pmin == pmax: fix by linear interpolation.
+        - pmin < pmax: marginalize over the specified interval.
     params_priors : list of str
-        One entry per parameter, same order as 'params'.
-        Each entry must be "uniform" or "log-uniform".
-        Only used for marginalized parameters.
+        "uniform" or "log-uniform" for each parameter.
     params_names : list of str
-        Example:
-            ["R", "l0", "Nl", "r_WFE", "IWA", "trans_instru", "sigma_m", "FoV"]
+        Names of the parameters.
     verbose : bool
-        Print a summary.
+        Print reduction information.
+    dtype : numpy dtype, optional
+        Output and computation dtype. Defaults to hcube.dtype.
 
     Returns
     -------
     hcube_red : ndarray
-        Reduced detection probability grid.
+        Reduced grid, with NaN where no valid configurations contribute.
     """
+
+    # --- Parameters ---
     dims_to_keep  = sorted(list(dims_to_keep))
     params        = list(params)
     params_names  = list(params_names)
     params_ranges = list(params_ranges)
     params_priors = list(params_priors)
     nparam        = len(params)
-    hcube_red     = hcube.copy()
 
+    # --- Input validation ---
     if len(params_names) != nparam:
         raise ValueError("params and params_names must have the same length.")
     if len(params_ranges) != nparam:
@@ -1132,21 +1185,40 @@ def reduce_hcube(hcube, dims_to_keep, params, params_ranges, params_priors, para
         raise ValueError("params_names must be unique.")
     if any(idim < 0 or idim >= nparam for idim in dims_to_keep):
         raise ValueError("dims_to_keep contains invalid axis indices.")
+    if len(set(dims_to_keep)) != len(dims_to_keep):
+        raise ValueError("dims_to_keep contains duplicate indices.")
 
+    # --- Preserve FastYield dtype ---
+    if dtype is None:
+        dtype = np.asarray(hcube).dtype
+    dtype = np.dtype(dtype)
+    if not np.issubdtype(dtype, np.floating):
+        raise ValueError("reduce_hcube requires a floating-point dtype.")
+    hcube          = np.asarray(hcube, dtype=dtype)
     dims_to_reduce = [idim for idim in range(nparam) if idim not in dims_to_keep]
 
-    # --- initial print ---
+    # --- Initialize numerator and denominator ---
+    # np.where creates an independent array; the input hcube is never modified.
+    valid       = np.isfinite(hcube)
+    numerator   = np.where(valid, hcube, 0.0)
+    denominator = valid.astype(dtype)
+    del valid
+
+    # --- Initial print ---
     if verbose:
         shape_ini = tuple(len(p) for p in params)
-        print("\nPdet reduction")
-        print("--------------")
-        print(f"\nInitial axes : ({', '.join(params_names)}) = {shape_ini}\n")
+
+        print("\nHypercube reduction")
+        print("-------------------")
+        print(f"\nInitial axes: ({', '.join(params_names)}) = {shape_ini}\n")
+
         for idim in range(nparam):
             if idim in dims_to_keep:
                 print(f"  - Keeping       {params_names[idim]:<20} axis")
 
+    # --- Reduce dimensions in reverse order ---
     for idim in sorted(dims_to_reduce, reverse=True):
-        axis       = params[idim]
+        axis       = np.asarray(params[idim], dtype=float)
         pmin, pmax = params_ranges[idim]
         prior      = params_priors[idim]
         name       = params_names[idim]
@@ -1155,30 +1227,54 @@ def reduce_hcube(hcube, dims_to_keep, params, params_ranges, params_priors, para
         if pmin < axis[0] or pmax > axis[-1]:
             raise ValueError(f"For parameter '{name}', requested range [{pmin:g}, {pmax:g}] is outside axis range [{axis[0]:g}, {axis[-1]:g}].")
 
-        # --- fix to one value: linear interpolation ---
+        # --- Fix parameter by linear interpolation ---
         if pmin == pmax:
-            hcube_red = interp_along_axis(hcube_red, axis=axis, x0=pmin, axis_id=idim)
+            numerator   = np.asarray(interp_along_axis(numerator,   axis=axis, x0=pmin, axis_id=idim), dtype=dtype)
+            denominator = np.asarray(interp_along_axis(denominator, axis=axis, x0=pmin, axis_id=idim), dtype=dtype)
             if verbose:
                 print(f"  - Fixing        {name:<20} at {pmin:<8g} with linear interpolation")
 
-        # --- marginalize on [pmin, pmax] with proper truncated cell weights ---
+        # --- Marginalize with truncated-cell weights ---
         else:
-            idx, w        = get_axis_weights_in_range(axis=axis, pmin=pmin, pmax=pmax, prior=prior)
-            hcube_red      = np.take(hcube_red, idx, axis=idim)
-            shape_w       = [1] * hcube_red.ndim
+            # The selected cells form a contiguous interval.
+            # Slicing avoids the potentially large copies created by np.take.
+            idx, w = get_axis_weights_in_range(axis=axis, pmin=pmin, pmax=pmax, prior=prior)
+            if len(idx) != idx[-1] - idx[0] + 1:
+                raise ValueError(f"Non-contiguous integration cells for '{name}'.")
+            sl               = [slice(None)] * numerator.ndim
+            sl[idim]         = slice(int(idx[0]), int(idx[-1]) + 1)
+            numerator_view   = numerator[tuple(sl)]
+            denominator_view = denominator[tuple(sl)]
+
+            # Broadcast integration weights using the FastYield dtype.
+            shape_w       = [1] * numerator_view.ndim
             shape_w[idim] = len(w)
-            w             = w.reshape(shape_w)
-            hcube_red      = np.sum(hcube_red * w, axis=idim) / np.sum(w)
+            w             = np.asarray(w, dtype=dtype).reshape(shape_w)
+
+            # Multiply in place to avoid allocating large temporary cubes.
+            # These are private working arrays, not the original input hcube.
+            np.multiply(numerator_view,   w, out=numerator_view)
+            np.multiply(denominator_view, w, out=denominator_view)
+
+            # Accumulate and remove the marginalized dimension.
+            numerator   = np.sum(numerator_view,   axis=idim, dtype=dtype)
+            denominator = np.sum(denominator_view, axis=idim, dtype=dtype)
             if verbose:
                 print(f"  - Marginalizing {name:<20} in [{pmin:<8g}, {pmax:<8g}] ({len(idx)} cells) with {prior} prior")
 
-    # --- final print ---
+    # --- Final normalization ---
+    hcube_red = np.full_like(numerator, np.nan, dtype=dtype)
+    np.divide(numerator, denominator, out=hcube_red, where=denominator > 0)
+
+    # --- Final print ---
     if verbose:
-        params_names_red = [params_names[idim] for idim in dims_to_keep]
+        params_names_red = [params_names[idim]     for idim in dims_to_keep]
         shape_end        = tuple(len(params[idim]) for idim in dims_to_keep)
-        print(f"\nFinal axes   : ({', '.join(params_names_red)}) = {shape_end}\n")
+        print(f"\nFinal axes: ({', '.join(params_names_red)}) = {shape_end}\n")
 
     return hcube_red
+
+
 
 
 
@@ -1208,13 +1304,13 @@ def main():
     # ---------------------------
     # Parameters
     # ---------------------------
-    PCS_CODE_VERSION = "PCS_sim_rWFE_Vmag_lam0D_v1"
+    PCS_CODE_VERSION = "PCS_FastYield_v1.0"
     dtype            = np.float32
 
     # --- Instrument specs (fixed) ---
     instru     = "PCS"     # Instrument's name
-    D          = 38.54     # [m]
-    S          = 980.      # [m2]
+    D          = 38.54     # [m]  Telescope diameter
+    S          = 980.      # [m2] Telescope collective surface
     N_mirror   = 5         # Number of mirror at the ELT (in order to compute the telescope transmission)
     trans_dust = 0.90      # effect of dust, from common ICD, section 4.11, p37 (Document Number: ESO-253082)
 
@@ -1294,11 +1390,13 @@ def main():
         # Spectral resolution (for each R, it is assumed to be constant along the whole wavelength range)
         R_min            = instrument_concept['R_min']        # [dimensionless]
         R_max            = instrument_concept['R_max']        # [dimensionless]
-        # Bandwidth central wavelength (for each l0, the bandwidth is given by lmin,lmax = l0 +- dl*Nl/2, where dl depends on R and l0)
+        # Central wavelength and physical spectral bandwidth (independent exploration axes).
         l0_min           = instrument_concept['l0_min']       # [µm]
         l0_max           = instrument_concept['l0_max']       # [µm]
-        # Number of spectral channels (number of effective bins sampling the data along the spectral dimension)
-        Nl_min           = instrument_concept['Nl_min']       # [bins]
+        # Bandwidth width
+        Dl_min           = instrument_concept['Dl_min']       # [µm]
+        Dl_max           = instrument_concept['Dl_max']       # [µm]
+        # Maximum number of spectral channels possible (is None for no restriction)
         Nl_max           = instrument_concept['Nl_max']       # [bins]
         # Instrumental transmission (without telescope transmission)
         trans_instru_min = instrument_concept['tr_min']       # [e-/ph]
@@ -1317,18 +1415,16 @@ def main():
         # Axis
         R                = np.logspace(np.log10(R_min),       np.log10(R_max),       N) # i dim
         l0               = np.linspace(l0_min,                l0_max,                N) # j dim
-        Nl               = np.logspace(np.log10(Nl_min),      np.log10(Nl_max),      N) # k dim
+        Dl               = np.linspace(Dl_min,                Dl_max,                N) # k dim [um]
         r_WFE            = np.linspace(r_WFE_min,             r_WFE_max,             N) # l dim
         IWA              = np.logspace(np.log10(IWA_min),     np.log10(IWA_max),     N) # m dim
         trans_instru     = np.linspace(trans_instru_min,      trans_instru_max,      N) # n dim
         sigma_m          = np.logspace(np.log10(sigma_m_min), np.log10(sigma_m_max), N) # o dim
         FoV              = np.logspace(np.log10(FoV_min),     np.log10(FoV_max),     N) # p dim
-        # Nl must have int values
-        Nl               = np.round(Nl).astype(int)
         # Axis must have unique and sorted values
         R                = np.unique(R)
         l0               = np.unique(l0)
-        Nl               = np.unique(Nl)
+        Dl               = np.unique(Dl)
         r_WFE            = np.unique(r_WFE)
         IWA              = np.unique(IWA)
         trans_instru     = np.unique(trans_instru)
@@ -1337,7 +1433,7 @@ def main():
         # Dimensions
         N_R              = len(R)
         N_l0             = len(l0)
-        N_Nl             = len(Nl)
+        N_Dl             = len(Dl)
         N_r_WFE          = len(r_WFE)
         N_IWA            = len(IWA)
         N_TI             = len(trans_instru)
@@ -1428,7 +1524,13 @@ def main():
     # Getting labels
     spectrum_contributions, name_model = get_spectrum_contribution_name_model(thermal_model, reflected_model)
 
-
+    # Valid spectral format windows
+    if instru_type == "IFU":
+        valid_windows_3D = get_valid_IFU_windows(R=R, l0=l0, Dl=Dl, Nl_max=Nl_max)
+        if not np.any(valid_windows_3D):
+            raise ValueError("No valid IFU configurations with the requested Nl_max.")
+    else:
+        valid_windows_3D = None
 
     # ---------------------------
     # Getting data
@@ -1455,7 +1557,7 @@ def main():
     print(f"PCS stellar V-band photometry: [{vmag_check.min():.2f}, {vmag_check.max():.2f}] mag")
 
     # Prints simulation parameters
-    print_simulation_summary(instru=instru, instru_type=instru_type, detector=detector, post_processing=post_processing, D=D, S=S, N_mirror=N_mirror, trans_dust=trans_dust, RON0=RON0, RON_lim=RON_lim, DC0=DC0, saturation_e=saturation_e, min_DIT=min_DIT, max_DIT=max_DIT, coronagraph=coronagraph, apodizer=apodizer, strehl=strehl, thermal_model=thermal_model, reflected_model=reflected_model, SNR_thr=SNR_thr, exposure_time=exposure_time, size_core=size_core, A_FWHM=A_FWHM, Rc=Rc if instru_type == "IFU" else None, filter_type=filter_type if instru_type == "IFU" else None, table_type=table_type, sep_min=sep_min, sep_max=sep_max, N_PT_raw=N_PT_raw, N_PT=N_PT, force_new_calc=force_new_calc, l0=l0, R=R if instru_type == "IFU" else None, Nl=Nl if instru_type == "IFU" else None, Dl=Dl if instru_type == "imager" else None, WFE=r_WFE, IWA=IWA, trans_instru=trans_instru, sigma_m=sigma_m, FoV=FoV)
+    print_simulation_summary(instru=instru, instru_type=instru_type, detector=detector, post_processing=post_processing, D=D, S=S, N_mirror=N_mirror, trans_dust=trans_dust, RON0=RON0, RON_lim=RON_lim, DC0=DC0, saturation_e=saturation_e, min_DIT=min_DIT, max_DIT=max_DIT, coronagraph=coronagraph, apodizer=apodizer, strehl=strehl, thermal_model=thermal_model, reflected_model=reflected_model, SNR_thr=SNR_thr, exposure_time=exposure_time, size_core=size_core, A_FWHM=A_FWHM, Rc=Rc if instru_type == "IFU" else None, filter_type=filter_type if instru_type == "IFU" else None, table_type=table_type, sep_min=sep_min, sep_max=sep_max, N_PT_raw=N_PT_raw, N_PT=N_PT, force_new_calc=force_new_calc, l0=l0, R=R if instru_type == "IFU" else None, Dl=Dl, WFE=r_WFE, IWA=IWA, trans_instru=trans_instru, sigma_m=sigma_m, FoV=FoV)
     # The shared legacy summary helper calls its argument 'WFE'; it receives r_WFE
     # for API compatibility. Its WFE/IWA unit annotations are NOT authoritative here.
     print(f"PCS PSF axes (authoritative): r_WFE={r_WFE} [dimensionless]; "
@@ -1477,17 +1579,13 @@ def main():
                 l0_min=l0_min, l0_max=l0_max, r_WFE_min=r_WFE_min, r_WFE_max=r_WFE_max, IWA_min=IWA_min, IWA_max=IWA_max, trans_instru_min=trans_instru_min, trans_instru_max=trans_instru_max, sep_min=sep_min, sep_max=sep_max, N_PT=N_PT,
 
                 # axis used
-                l0=l0, r_WFE=r_WFE, IWA=IWA, trans_instru=trans_instru,
+                l0=l0, Dl=Dl, r_WFE=r_WFE, IWA=IWA, trans_instru=trans_instru,
                 )
 
     if instru_type == "IFU":
-        meta.update(dict(Rc=Rc, filter_type=filter_type, R=R, Nl=Nl,))
-    elif instru_type == "imager":
-        meta.update(dict(Dl=Dl,))
-    else:
-        raise ValueError("instru_type must be 'IFU' or 'imager'.")
+        meta.update(dict(Rc=Rc, filter_type=filter_type, R=R, Nl_max=Nl_max))
     suffix, meta_clean, _payload = make_suffix(meta, n=16)
-    sim_dir_concept = sim_dir / concept_name
+    sim_dir_concept              = sim_dir / concept_name
     sim_dir_concept.mkdir(parents=True, exist_ok=True)
     write_meta(sim_dir_concept, suffix, meta_clean, suffix_as_prefix=True)
     print("\nFastYield data files suffix:", suffix)
@@ -1519,7 +1617,7 @@ def main():
     # Opening existing #
     ####################
     if not do_new:
-        # For IFU (7D):    (Planets, R, l0, Nl, r_WFE, IWA, trans_instru)
+        # For IFU (7D):    (Planets, R, l0, Dl, r_WFE, IWA, trans_instru)
         # For Imager (6D): (Planets,    l0, Dl, r_WFE, IWA, trans_instru)
         signal_planets       = np.load(signal_path,       mmap_mode="r") # [e-/FWHM/DIT]
         sigma_halo_2_planets = np.load(sigma_halo_2_path, mmap_mode="r") # [e-/FWHM/DIT]**2
@@ -1576,43 +1674,18 @@ def main():
         else:
             radial_transmission0_5D = None
 
-        # Contract with ELT_FastYield_PSF_profiles_PCS_new.py:
-        # wave [um], r_WFE [dimensionless], IWA [lambda0_band/D], mag_star [V], separation [mas].
+        # --- Checking PSF input axes and dimensions ---
         axes_psf = (wave0, r_WFE0, IWA0, mag_star0, separation0)
-        names_psf = ("wave", "r_WFE", "IWA_lam0D", "Vmag", "separation_mas")
-        for name, axis in zip(names_psf, axes_psf):
+        for axis in axes_psf:
             if axis.ndim != 1 or not np.all(np.isfinite(axis)) or np.any(np.diff(axis) <= 0):
-                raise ValueError(f"Invalid PCS PSF coordinate axis {name}: expected increasing finite 1D values")
-        expected_psf_shape = tuple(len(axis) for axis in axes_psf)
-        for name, array in (("PSF_profile_density", PSF_profile_density0_5D),
-                            ("fraction_core", fraction_core0_5D),
-                            ("radial_transmission", radial_transmission0_5D)):
-            if array is not None and array.shape != expected_psf_shape:
-                raise ValueError(f"{name} has shape {array.shape}; expected {expected_psf_shape}")
-        for name, requested, available in (("wave", l0, wave0), ("r_WFE", r_WFE, r_WFE0),
-                                            ("IWA_lam0D", IWA, IWA0)):
+                raise ValueError("Invalid PCS PSF axis.")
+        expected_shape = tuple(map(len, axes_psf))
+        for array in (PSF_profile_density0_5D, fraction_core0_5D, radial_transmission0_5D):
+            if array is not None and array.shape != expected_shape:
+                raise ValueError(f"Invalid PCS PSF shape: {array.shape}, expected {expected_shape}.")
+        for requested, available in ((l0, wave0), (r_WFE, r_WFE0), (IWA, IWA0)):
             if np.min(requested) < available[0] - 1e-6 or np.max(requested) > available[-1] + 1e-6:
-                raise ValueError(f"Requested {name} range is outside the PCS PSF input cube")
-        if not np.isclose(r_WFE0, 1.0).any() or not np.isclose(IWA0, 2.4).any():
-            raise ValueError("PCS PSF cube must contain the nominal r_WFE=1 and IWA=2.4 planes")
-        print("\nPCS PSF coordinates: r_WFE dimensionless, IWA in lambda0_band/D, stellar magnitude in V")
-
-        # The current PCS generator anchors stellar profiles at the nominal slice,
-        # but its extrapolated coronagraphic profiles may not remain unit-normalized.
-        # Report this explicitly: FastYield multiplies the PSF by T_star below.
-        sep_edges = np.empty(len(separation0) + 1, dtype=float)
-        sep_edges[0] = 0.0
-        sep_edges[1:-1] = 0.5 * (separation0[:-1] + separation0[1:])
-        sep_edges[-1] = separation0[-1] + 0.5 * (separation0[-1] - separation0[-2])
-        annulus_area = np.pi * np.diff(sep_edges**2)
-        iw_nom = int(np.argmin(np.abs(r_WFE0 - 1.0)))
-        ii_nom = int(np.argmin(np.abs(IWA0 - 2.4)))
-        for label, iw in (("nominal", iw_nom), ("lowest r_WFE", 0), ("highest r_WFE", len(r_WFE0)-1)):
-            integrals = np.sum(PSF_profile_density0_5D[:, iw, ii_nom, :, :] * annulus_area, axis=-1)
-            print(f"  {label} PSF integral range at IWA=2.4: [{integrals.min():.4g}, {integrals.max():.4g}]")
-            if coronagraph is not None and not np.allclose(integrals, 1.0, rtol=0.05, atol=0.05):
-                print("  WARNING: PSF is not normalized at this r_WFE; "
-                      "T_star * PSF integral, not T_star alone, is the effective stellar throughput")
+                raise ValueError("Requested parameters outside PCS PSF grid.")        
 
         # Keeping the raw mag_star and separation axis
         mag_star   = mag_star0.astype(dtype,   copy=False)
@@ -1718,12 +1791,17 @@ def main():
         vega_spectrum_K = vega_spectrum.interpolate_wavelength(wave_K, renorm=False) # [J/s/m2/µm]
         counts_vega_K   = get_counts_from_density(wave=wave_K, density=vega_spectrum_K.flux)
 
-        # Vega zeropoints [J/s/m2/µm] (for star magnitues computations)
-
-
         # Global model-bandwidth (with constant dl step, must be evenly spaced in order to create the model spectra, for the rotationnal broadening with Vsini)
-        lmin_model = 0.98*l0_min                                 # [µm] a bit larger for doppler shifts and to avoid edge effects
-        lmax_model = 1.02*l0_max                                 # [µm] a bit larger for doppler shifts and to avoid edge effects
+        # Cover every requested IFU spectral window, including the widest one
+        # at the boundaries of the l0 axis; retain the original imager handling.
+        if instru_type == 'IFU':
+            if l0_min - Dl_max / 2 <= 0:
+                raise ValueError('The IFU bandwidth extends to nonphysical wavelengths; reduce Dl_max.')
+            lmin_model = 0.98 * (l0_min - Dl_max / 2) # [um]
+            lmax_model = 1.02 * (l0_max + Dl_max / 2) # [um]
+        else:
+            lmin_model = 0.98*l0_min                  # [um]
+            lmax_model = 1.02*l0_max                  # [um]
         dl_model   = lmin_model / (2*R_model)                    # [µm/bin] Nyquist sampling of a spectrum with max resolving power R_model: 2 samples per resolution element at lmin_model
         wave_model = np.arange(lmin_model, lmax_model, dl_model) # [µm] Model wavelength axis (with constant dl step)
 
@@ -1779,7 +1857,10 @@ def main():
             dwave_1D_list          = [None] * len(R) # (R)     [µm/bin]
             range_1D_list          = [None] * len(R) # (R)
             l0_2D                  = l0[:, None]     # (l0, 1) [µm]
-            Nl_2D                  = Nl[None, :]     # (1, Nl) [px]
+            Dl_2D                  = Dl[None, :]     # (1, Dl) [um]
+            # Symmetric wavelength intervals, exactly as in the imager case.
+            l0_2D_min = l0_2D - Dl_2D / 2
+            l0_2D_max = l0_2D + Dl_2D / 2
             for i, res in enumerate(R):
 
                 # --- Build a wavelength grid with *constant resolving power* R = res ---
@@ -1804,16 +1885,9 @@ def main():
                 wave_1D_list[i]  = wave_res                                # [µm]
                 dwave_1D_list[i] = dwave_res                               # [µm/bin]
 
-                # --- Build, for each (l0, Nl), the index range of a contiguous spectral window ---
-                # On a log-λ grid, a window of Nl pixels corresponds to a multiplicative span in λ.
-                # Half-window in ln(λ) is: half = (Nl/2) * Δln(λ)
-                half = (Nl_2D - 1) * dln / 2
-
-                # Convert the ±half span in ln(λ) into wavelength bounds around the central wavelength λ0:
-                l0_2D_min = l0_2D * np.exp(-half) # (l0, Nl) [µm]
-                l0_2D_max = l0_2D * np.exp(+half) # (l0, Nl) [µm]
-
-                # Find the corresponding index interval [idx_lo, idx_hi) in the wave_res grid.
+                # Find spectral channels whose centres lie in
+                # [l0 - Dl/2, l0 + Dl/2]; the effective channel count depends
+                # on R, l0 and Dl and is no longer an independent axis.
                 # Using side="left"/"right" ensures we include the full requested wavelength span.
                 idx_lo           = np.searchsorted(wave_res, l0_2D_min, side="left").astype(np.int32)
                 idx_hi           = np.searchsorted(wave_res, l0_2D_max, side="right").astype(np.int32)
@@ -1832,14 +1906,14 @@ def main():
 
 
             # --- Global context worker ---
-            _IFU_CTX = dict(planet_table=planet_table, A_FWHM=A_FWHM, separation=separation, thermal_model=thermal_model, reflected_model=reflected_model, post_processing=post_processing, wave_model=wave_model, wave_instru=wave_instru, wave_K=wave_K, counts_vega_K=counts_vega_K, mag_star=mag_star, scale_spectrum=scale_spectrum, N_R=N_R, N_l0=N_l0, N_Nl=N_Nl, R=R, wave_1D_list=wave_1D_list, dwave_1D_list=dwave_1D_list, trans_tell_tel_1D_list=trans_tell_tel_1D_list, trans_instru=trans_instru, background_1D_list=background_1D_list, pxscales=pxscales, Rc=Rc, filter_type=filter_type, range_1D_list=range_1D_list, saturation_e=saturation_e, min_DIT=min_DIT, max_DIT=max_DIT, PSF_profile_5D_path=str(PSF_profile_5D_tmp_path), fraction_core_5D_path=str(fraction_core_5D_tmp_path), PSF_profile_max_4D_path=str(PSF_profile_max_4D_tmp_path), signal_path=str(signal_path), sigma_halo_2_path=str(sigma_halo_2_path), sigma_bkg_2_path=str(sigma_bkg_2_path), DIT_path=str(DIT_path), sigma_syst_base_2_path=str(sigma_syst_base_2_path), dtype=dtype, D=D, pxscales_rad=pxscales_rad)
+            _IFU_CTX = dict(planet_table=planet_table, A_FWHM=A_FWHM, separation=separation, thermal_model=thermal_model, reflected_model=reflected_model, post_processing=post_processing, wave_model=wave_model, wave_instru=wave_instru, wave_K=wave_K, counts_vega_K=counts_vega_K, mag_star=mag_star, scale_spectrum=scale_spectrum, N_R=N_R, N_l0=N_l0, N_Dl=N_Dl, R=R, wave_1D_list=wave_1D_list, dwave_1D_list=dwave_1D_list, trans_tell_tel_1D_list=trans_tell_tel_1D_list, trans_instru=trans_instru, background_1D_list=background_1D_list, pxscales=pxscales, Rc=Rc, filter_type=filter_type, range_1D_list=range_1D_list, valid_windows_3D=valid_windows_3D, saturation_e=saturation_e, min_DIT=min_DIT, max_DIT=max_DIT, PSF_profile_5D_path=str(PSF_profile_5D_tmp_path), fraction_core_5D_path=str(fraction_core_5D_tmp_path), PSF_profile_max_4D_path=str(PSF_profile_max_4D_tmp_path), signal_path=str(signal_path), sigma_halo_2_path=str(sigma_halo_2_path), sigma_bkg_2_path=str(sigma_bkg_2_path), DIT_path=str(DIT_path), sigma_syst_base_2_path=str(sigma_syst_base_2_path), dtype=dtype, D=D, pxscales_rad=pxscales_rad)
 
 
             # --- Arguments for Pool ---
             init_worker  = init_worker_IFU
             _CTX         = _IFU_CTX
             func_process = process_IFU
-            shape_SNR    = (N_PT, N_R, N_l0, N_Nl, N_r_WFE, N_IWA, N_TI)
+            shape_SNR    = (N_PT, N_R, N_l0, N_Dl, N_r_WFE, N_IWA, N_TI)
             tqdm_desc    = f"ELT/{instru} ({instru_type} and {post_processing}) multiprocessing over planets of signal, stellar halo photon noise, DIT length and base for {residuals} noise"
 
 
@@ -1954,15 +2028,15 @@ def main():
 
     # Define parameters and their names
     if instru_type == "IFU":
-        params         = [R,                           l0,                                                Nl,                                           r_WFE,                                 IWA,                                                       trans_instru,                                    100*sigma_m,                                        FoV]                     # params axis
-        params_ranges  = [(R.min(), R.max()),          (l0.min(), l0.max()),                              (Nl.min(), Nl.max()),                         (r_WFE_ref, r_WFE_ref),                (IWA_ref, IWA_ref),                                        (trans_instru.min(), trans_instru.max()),        ((100*sigma_m).min(), (100*sigma_m).min()),         (FoV.max(), FoV.max())]  # params ranges for marginalization
-        #params_ranges  = [(R.min(), R.max()),          (l0.min(), l0.max()),                              (Nl.max(), Nl.max()),                         (r_WFE_ref, r_WFE_ref),                (IWA_ref, IWA_ref),                                        (trans_instru.max(), trans_instru.max()),        ((100*sigma_m).min(), (100*sigma_m).min()),         (FoV.max(), FoV.max())] # params ranges for marginalization
-        params_priors  = ["log-uniform",               "uniform",                                         "log-uniform",                                "uniform",                             "log-uniform",                                             "uniform",                                       "log-uniform",                                      "log-uniform"]           # params priors for marginalization
-        params_islog   = [True,                        False,                                             True,                                         False,                                 True,                                                      False,                                           True,                                               True]                    # params space (linspace or logspace)
-        params_isint   = [True,                        False,                                             True,                                         False,                                 False,                                                     False,                                           False,                                              True]                    # params rounded format
-        params_names   = ["R",                         "l0 [µm]",                                         "Nl",                                         "r_WFE",                               "IWA [lambda0/D]",                                         "trans_instru [e-/ph]",                          "sigma_m [%]",                                      "FoV [mas]"]             # params names
-        params_names_l = [r"$R$",                      r"$\lambda_0$  [µm]",                              r"$N_{\lambda}$",                             r"$r_{\mathrm{WFE}}$",                 r"IWA [lambda0/D]",                                        r"$\gamma_{instru}$ [e-/ph]",                    r"$\sigma_m$ [%]",                                  r"$FoV$ [mas]"]          # params labels
-        params_names_L = [r"Spectral resolution $R$",  r"Bandwidth central wavelength $\lambda_0$ [µm]",  r"Number of spectral channel $N_{\lambda}$",  r"Relative AO WFE $r_{\mathrm{WFE}}$", r"Coronagraph FPM radius [$\lambda_{0,\mathrm{band}}/D$]", r"Instrumental transmission $\gamma_{instru}$",  rf"{residuals} residual amplitude $\sigma_m$ [%]",  r"Field of View [mas]"]  # params detailed labels
+        params         = [R,                           l0,                                                Dl,                                           r_WFE,                                 IWA,                                                       trans_instru,                                    100*sigma_m,                                        FoV]                     # params axis
+        params_ranges  = [(R.min(), R.max()),          (l0.min(), l0.max()),                              (Dl.min(), Dl.max()),                         (r_WFE_ref, r_WFE_ref),                (IWA_ref, IWA_ref),                                        (trans_instru.min(), trans_instru.max()),        ((100*sigma_m).min(), (100*sigma_m).min()),         (FoV.max(), FoV.max())]  # params ranges for marginalization
+        #params_ranges  = [(R.min(), R.max()),          (l0.min(), l0.max()),                              (Dl.max(), Dl.max()),                         (r_WFE_ref, r_WFE_ref),                (IWA_ref, IWA_ref),                                        (trans_instru.max(), trans_instru.max()),        ((100*sigma_m).min(), (100*sigma_m).min()),         (FoV.max(), FoV.max())] # params ranges for marginalization
+        params_priors  = ["log-uniform",               "uniform",                                         "uniform",                                    "uniform",                             "log-uniform",                                             "uniform",                                       "log-uniform",                                      "log-uniform"]           # params priors for marginalization
+        params_islog   = [True,                        False,                                             False,                                        False,                                 True,                                                      False,                                           True,                                               True]                    # params space (linspace or logspace)
+        params_isint   = [True,                        False,                                             False,                                        False,                                 False,                                                     False,                                           False,                                              True]                    # params rounded format
+        params_names   = ["R",                         "l0 [µm]",                                         "Dl [µm]",                                    "r_WFE",                               "IWA [lambda0/D]",                                         "trans_instru [e-/ph]",                          "sigma_m [%]",                                      "FoV [mas]"]             # params names
+        params_names_l = [r"$R$",                      r"$\lambda_0$  [µm]",                              r"$\Delta\lambda$ [µm]",                      r"$r_{\mathrm{WFE}}$",                 r"IWA [lambda0/D]",                                        r"$\gamma_{instru}$ [e-/ph]",                    r"$\sigma_m$ [%]",                                  r"$FoV$ [mas]"]          # params labels
+        params_names_L = [r"Spectral resolution $R$",  r"Bandwidth central wavelength $\lambda_0$ [µm]",  r"Spectral bandwidth $\Delta\lambda$ [µm]",  r"Relative AO WFE $r_{\mathrm{WFE}}$", r"Coronagraph FPM radius [$\lambda_{0,\mathrm{band}}/D$]", r"Instrumental transmission $\gamma_{instru}$",  rf"{residuals} residual amplitude $\sigma_m$ [%]",  r"Field of View [mas]"]  # params detailed labels
 
     elif instru_type == "imager":
         params         = [l0,                                                Dl,                                         r_WFE,                                 IWA,                                                        trans_instru,                                    100*sigma_m,                                        FoV]                    # params axis
@@ -1980,18 +2054,18 @@ def main():
     # COMPUTING MAIN QUANTITIES
 
     # Computing the SNR and detection mask (SNR > SNR_thr) for each planet
-    # For IFU (8D):    (planets, R, l0, Nl, r_WFE, IWA, trans_instru, sigma_m)
+    # For IFU (8D):    (planets, R, l0, Dl, r_WFE, IWA, trans_instru, sigma_m)
     # For Imager (7D): (planets,    l0, Dl, r_WFE, IWA, trans_instru, sigma_m)
-    SNR_planets     = get_SNR(instru=instru, instru_type=instru_type, post_processing=post_processing, exposure_time=exposure_time, min_DIT=min_DIT, RON0=RON0, RON_lim=RON_lim, DC0=DC0, A_FWHM=A_FWHM, Rc=Rc, filter_type=filter_type, signal_planets=signal_planets, sigma_halo_2_planets=sigma_halo_2_planets, sigma_bkg_2_planets=sigma_bkg_2_planets, sigma_syst_base_2_planets=sigma_syst_base_2_planets, DIT_planets=DIT_planets, R=R if instru_type == "IFU" else None, Nl=Nl if instru_type == "IFU" else None, sigma_m=sigma_m, sim_dir=sim_dir_concept, suffix=suffix, dtype=dtype)
+    SNR_planets     = get_SNR(instru=instru, instru_type=instru_type, post_processing=post_processing, exposure_time=exposure_time, min_DIT=min_DIT, RON0=RON0, RON_lim=RON_lim, DC0=DC0, A_FWHM=A_FWHM, Rc=Rc, filter_type=filter_type, signal_planets=signal_planets, sigma_halo_2_planets=sigma_halo_2_planets, sigma_bkg_2_planets=sigma_bkg_2_planets, sigma_syst_base_2_planets=sigma_syst_base_2_planets, DIT_planets=DIT_planets, R=R if instru_type == "IFU" else None, Dl=Dl if instru_type == "IFU" else None, sigma_m=sigma_m, sim_dir=sim_dir_concept, suffix=suffix, dtype=dtype)
     mask_detections = get_mask_detections(SNR_planets=SNR_planets, SNR_thr=SNR_thr, sim_dir=sim_dir_concept, suffix=suffix)
 
     # Precompute FoV gating once
     p0_FoV = np.searchsorted(FoV / 2, separation_planets, side="left").astype(np.int32)
 
     # Getting ndim detection probability
-    # For IFU (8D):    (R, l0, Nl, r_WFE, IWA, trans_instru, sigma_m, FoV)
+    # For IFU (8D):    (R, l0, Dl, r_WFE, IWA, trans_instru, sigma_m, FoV)
     # For Imager (7D): (   l0, Dl, r_WFE, IWA, trans_instru, sigma_m, FoV)
-    Pdet = get_Pdet(mask_detections=mask_detections, FoV=FoV, p0_FoV=p0_FoV, dtype=dtype)
+    Pdet = get_Pdet(mask_detections=mask_detections, FoV=FoV, p0_FoV=p0_FoV, dtype=dtype, valid_windows_3D=valid_windows_3D)
 
     # --- Removing useless dimensions ---
     # Identify dimensions to remove (if size == 1)
@@ -2018,6 +2092,11 @@ def main():
     Ndim  = len(params)
     ncols = min(2, Ndim)
     nrows = int(np.ceil(Ndim / ncols))
+    if instru_type == "IFU":
+        valid_windows_reduced = valid_windows_3D.copy()
+        for idim in (2, 1, 0):
+            if orig_sizes[idim] == 1:
+                valid_windows_reduced = np.take(valid_windows_reduced, 0, axis=idim)
 
     # Plot order: display r_WFE and IWA in the last panels when present
     dims_last  = [next((idim for idim, name in enumerate(params_names) if key in name), None) for key in ("r_WFE", "IWA")]
@@ -2069,13 +2148,13 @@ def main():
         if "thermal" in light_regime_plot:
             print(f"\n{label_ptypes[ptype]} in thermal light:")
             idx_ptype_thermal  = np.where(mask_ptype & mask_thermal)[0]
-            Pdet_ptype_thermal = get_Pdet(mask_detections=mask_detections, FoV=FoV, p0_FoV=p0_FoV, dtype=dtype, indices=idx_ptype_thermal, jump_before_tqdm=False)
+            Pdet_ptype_thermal = get_Pdet(mask_detections=mask_detections, FoV=FoV, p0_FoV=p0_FoV, dtype=dtype, indices=idx_ptype_thermal, jump_before_tqdm=False, valid_windows_3D=valid_windows_3D)
         else:
             Pdet_ptype_thermal = None
         if "reflected" in light_regime_plot:
             print(f"\n{label_ptypes[ptype]} in reflected light:")
             idx_ptype_reflected  = np.where(mask_ptype & mask_reflected)[0]
-            Pdet_ptype_reflected = get_Pdet(mask_detections=mask_detections, FoV=FoV, p0_FoV=p0_FoV, dtype=dtype, indices=idx_ptype_reflected, jump_before_tqdm=False)
+            Pdet_ptype_reflected = get_Pdet(mask_detections=mask_detections, FoV=FoV, p0_FoV=p0_FoV, dtype=dtype, indices=idx_ptype_reflected, jump_before_tqdm=False, valid_windows_3D=valid_windows_3D)
         else:
             Pdet_ptype_reflected = None
         for idim in sorted(dim_to_remove, reverse=True):
@@ -2572,7 +2651,6 @@ def main():
     # Personalized ranges: scalar = fixed value, [min,max] = marginalized range, None = keep default params_ranges
     R_plot            = 2900 #[30_000, 100_000] # [dimensionless]
     l0_plot           = 1.23 #1.5               # [µm]
-    Nl_plot           = 500 #[1_000, 100_000]   # [bins]
     Dl_plot           = 0.5               # [µm]
     r_WFE_plot        = r_WFE_ref         # [dimensionless]
     IWA_plot          = IWA_ref           # [lambda0_band/D]
@@ -2588,8 +2666,8 @@ def main():
     # Parameter ranges used specifically for population diagnostics
     params_ranges_pop = [tuple(rng) for rng in params_ranges]
     if snr_population_mode == "personalized":
-        personalized_ranges = {"R": R_plot, "l0": l0_plot, "Nl": Nl_plot, "Dl": Dl_plot, "r_WFE": r_WFE_plot, "IWA": IWA_plot, "trans_instru": trans_instru_plot, "sigma_m": sigma_m_plot, "FoV": FoV_plot}
-        allowed_keys        = {"IFU": {"R", "l0", "Nl", "r_WFE", "IWA", "trans_instru", "sigma_m", "FoV"}, "imager": {"l0", "Dl", "r_WFE", "IWA", "trans_instru", "sigma_m", "FoV"}}[instru_type]
+        personalized_ranges = {"R": R_plot, "l0": l0_plot, "Dl": Dl_plot, "r_WFE": r_WFE_plot, "IWA": IWA_plot, "trans_instru": trans_instru_plot, "sigma_m": sigma_m_plot, "FoV": FoV_plot}
+        allowed_keys        = {"IFU": {"R", "l0", "Dl", "r_WFE", "IWA", "trans_instru", "sigma_m", "FoV"}, "imager": {"l0", "Dl", "r_WFE", "IWA", "trans_instru", "sigma_m", "FoV"}}[instru_type]
         def format_range(r):
             return f"{r[0]:g}" if np.isclose(r[0], r[1]) else f"[{r[0]:g}, {r[1]:g}]"
         def format_value(value):
@@ -2637,9 +2715,18 @@ def main():
             changed = not np.allclose(requested, used)
             if changed:
                 warning = f"(WARNING: cropped to [{axis[0]:g}, {axis[-1]:g}])"
-            print_range(key, value, format_range(params_ranges_pop[idx]) if changed else None, warning)
+            print_range(key, value, format_range(params_ranges_pop[idx]) if changed else None, warning)        
+        if instru_type == "IFU" and Nl_max is not None:
+            for key in ("R", "l0", "Dl"):
+                idx = next((i for i, name in enumerate(params_names) if name == key or name.startswith(key + " ")), None)
+                if idx is None:
+                    continue
+                pmin, pmax = params_ranges_pop[idx]
+                if pmin == pmax:
+                    axis = np.asarray(params[idx], dtype=float)
+                    if not np.any(np.isclose(axis, pmin, rtol=1e-10, atol=1e-12)):
+                        raise ValueError(f"Fixed {key}={pmin:g} is not on the simulated grid. With Nl_max={Nl_max}, choose an existing grid point to avoid interpolation across an instrument-validity boundary.")
         print()
-
 
     # Best-Pdet configuration
     if snr_population_mode == "max":
@@ -2695,7 +2782,10 @@ def main():
 
         SNR_plot = np.zeros(N_PT, dtype=float)
         for ip in tqdm(range(N_PT), desc="Marginalizing SNR over parameter grid"):
-            SNR_i        = np.nan_to_num(np.asarray(SNR_planets[ip], dtype=float).squeeze(), nan=0.0, posinf=0.0, neginf=0.0)
+            SNR_i        = np.asarray(SNR_planets[ip], dtype=float).squeeze()            
+            if instru_type == "IFU":
+                mask_shape = (valid_windows_reduced.shape + (1,) * (SNR_i.ndim - valid_windows_reduced.ndim))
+                SNR_i      = np.where(valid_windows_reduced.reshape(mask_shape), SNR_i, np.nan)
             SNR_plot[ip] = float(reduce_hcube(hcube=SNR_i, dims_to_keep=[], params=params_snr, params_ranges=params_ranges_snr, params_priors=params_priors_snr, params_names=params_names_snr, verbose=False))
 
         # FoV marginalization
@@ -2728,8 +2818,12 @@ def main():
         min_DIT_grid         = np.asarray(min_DIT, dtype=float).reshape(shape_l0)
 
         def marginalize_raw(quantity):
+            quantity = np.asarray(quantity, dtype=float)
+            if instru_type == "IFU":
+                mask_shape = (valid_windows_reduced.shape + (1,) * (quantity.ndim - valid_windows_reduced.ndim))
+                quantity   = np.where(valid_windows_reduced.reshape(mask_shape), quantity, np.nan)
             return float(reduce_hcube(hcube=quantity, dims_to_keep=[], params=params_raw, params_ranges=params_ranges_raw, params_priors=params_priors_raw, params_names=params_names_raw, verbose=False))
-
+        
         var_halo = np.zeros(N_PT, dtype=float)
         var_bkg  = np.zeros(N_PT, dtype=float)
         var_RON  = np.zeros(N_PT, dtype=float)
@@ -2848,6 +2942,4 @@ if __name__ == "__main__":
         mp.freeze_support() # for Windows
     _out = main()
     globals().update(_out)
-
-
 

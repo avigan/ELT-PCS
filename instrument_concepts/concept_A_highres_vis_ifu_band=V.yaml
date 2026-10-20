@@ -7,8 +7,9 @@ R_min: 50_000          # [dimensionless] spectral resolution
 R_max: 200_000
 l0_min: 0.5            # [µm] central wavelength
 l0_max: 0.6
-Nl_min: 100            # [bins] number of spectral channels
-Nl_max: 200_000
+Dl_min:  0.01          # [µm] bandwidth
+Dl_max:  0.5
+Nl_max: 200_000        # Maximum number of spectral channels possible (set to null for no restriction)
 FoV_min: 1             # [mas] field of view
 FoV_max: 500
 tr_min: 0.001          # [dimensionless] instrument transmission
