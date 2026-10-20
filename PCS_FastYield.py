@@ -6,11 +6,10 @@ os.environ["NUMEXPR_NUM_THREADS"]  = "1"
 os.environ["NUMBA_NUM_THREADS"]    = "1"
 
 # import FastYield modules
-import fastyield.config as config
+# import fastyield.config as config
 # config.dpi_fig = 72
 
 from fastyield.config import rad2arcsec, h, c, R0_min, R0_max, lmin_bands, lmax_bands, archive_path, simulated_path, get_sim_data_path, dpi_fig
-from fastyield.utils import plot_trans_tell_tel, plot_bkg_skycalc
 from fastyield.get_specs import load_tell_trans, get_detector_specs
 from fastyield.FastYield import load_planet_table, get_filename_table, get_mask_planet_type, yield_population_plot, yield_heatmap_ELT
 from fastyield.FastYield_helpers import print_simulation_summary, make_suffix, write_meta, memmap_nbytes, format_nbytes, create_memmap_with_log
@@ -1836,6 +1835,7 @@ def main():
         trans_tell_tel = Spectrum(wavelength=wave_instru, flux=trans_tell.flux*trans_tel.flux, R=np.fmax(trans_tell.R, trans_tel.R), T=None, lg=None, model=None, rv=None, vsini=None, sigma=None)
 
         # Plotting transmissions
+        # from fastyield.utils import plot_trans_tell_tel, plot_bkg_skycalc
         # plot_trans_tell_tel(trans_tell=trans_tell, trans_tel=trans_tel)
 
         # Background spectrum [ph/mas2/mn/µm] (from SkyCalc)
