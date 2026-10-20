@@ -52,6 +52,7 @@ ROOT = Path(__file__).resolve().parent
 
 # Put SUMMARY/ or SUMMARY.zip next to this script, or set SUMMARY_INPUT explicitly.
 SUMMARY_INPUT = "/home/martoss/Documents/PhD/work/MAIN/data/PCS/SUMMARY"
+#SUMMARY_INPUT = "/Users/avigan/Cloud/OSU/Work/PCS/Simulations/WP2_profiles/SUMMARY/"
 
 def resolve_summary_dir(path):
     path = Path(path)
@@ -591,7 +592,7 @@ fraction_core_DL_2D = safe01(np.nanmax(
 ))
 plot_strehl_diagnostic(wave=wave, mags=mag_star, WFE_nm_1D=WFE_nm_1D,
                        SR_2D=SR_2D, SR_raw_2D=SR_raw_2D)
-            
+
 r_WFE_base = np.linspace(r_WFE_min, r_WFE_max, N_r_WFE_base)
 r_WFE      = make_axis_with_values(r_WFE_base, [1.0])
 iw_ref     = int(np.argmin(np.abs(r_WFE - 1.0)))
@@ -673,7 +674,7 @@ for mode in coronagraph_modes:
     ii_ref       = int(np.argmin(np.abs(IWA - IWA_ref)))
 
     for im in tqdm(range(N_mag), desc=f"{mode}: r_WFE x IWA grid over V magnitudes"):
-        
+
         # Argument refers to the IMG halo; the coronagraphic shape itself
         # is treated as speckle-dominated inside build_PSF_grid.
         speck_ref = PSF_profile_density_speck_3D[:, im]
