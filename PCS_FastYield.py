@@ -1276,8 +1276,6 @@ def reduce_hcube(hcube, dims_to_keep, params, params_ranges, params_priors, para
 
 
 
-
-
 def save_marginalized_planet_table(planet_table, signal, sigma_fund, sigma_syst, DIT, SNR, exposure_time, table, instru, apodizer, strehl, coronagraph, name_model, path):
     """Save marginalized FastYield quantities and SNR in a standard planet table."""
     planet_table = planet_table.copy()
@@ -1341,7 +1339,7 @@ def main():
 
     # --- Instrument concept ---
     # One YAML file per concept in instrument_concepts/ (ifu_global, imager_global, concept_A_highres_vis_ifu, ...)
-    concept_name       = "imager_global"
+    concept_name       = "ifu_global"
     instrument_concept = load_instrument_concept(concept_name)
 
     # --- General parameters for the simulation ---
@@ -1794,14 +1792,10 @@ def main():
         # Global model-bandwidth (with constant dl step, must be evenly spaced in order to create the model spectra, for the rotationnal broadening with Vsini)
         # Cover every requested IFU spectral window, including the widest one
         # at the boundaries of the l0 axis; retain the original imager handling.
-        if instru_type == 'IFU':
-            if l0_min - Dl_max / 2 <= 0:
-                raise ValueError('The IFU bandwidth extends to nonphysical wavelengths; reduce Dl_max.')
-            lmin_model = 0.98 * (l0_min - Dl_max / 2) # [um]
-            lmax_model = 1.02 * (l0_max + Dl_max / 2) # [um]
-        else:
-            lmin_model = 0.98*l0_min                  # [um]
-            lmax_model = 1.02*l0_max                  # [um]
+        if l0_min - Dl_max / 2 <= 0:
+            raise ValueError("The spectral bandwidth extends to nonphysical wavelengths; reduce Dl_max.")
+        lmin_model = 0.98 * (l0_min - Dl_max / 2)                # [µm]
+        lmax_model = 1.02 * (l0_max + Dl_max / 2)                # [µm]
         dl_model   = lmin_model / (2*R_model)                    # [µm/bin] Nyquist sampling of a spectrum with max resolving power R_model: 2 samples per resolution element at lmin_model
         wave_model = np.arange(lmin_model, lmax_model, dl_model) # [µm] Model wavelength axis (with constant dl step)
 
