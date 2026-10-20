@@ -403,8 +403,8 @@ def process_IFU(idx):
         wave_i           = wave_1D_list[i]
         dwave_i          = dwave_1D_list[i]
         trans_tell_tel_i = trans_tell_tel_1D_list[i]
-        star_i           = star_spectrum.degrade_resolution(wave_i,   renorm=False, R_output=res).flux # [ph/mn/µm]
-        planet_i         = planet_spectrum.degrade_resolution(wave_i, renorm=False, R_output=res).flux # [ph/mn/µm]
+        star_i           = star_spectrum.degrade_resolution(wave_i,   renorm=False, R_output=res, filter_type=filter_type).flux # [ph/mn/µm]
+        planet_i         = planet_spectrum.degrade_resolution(wave_i, renorm=False, R_output=res, filter_type=filter_type).flux # [ph/mn/µm]
         idx_lo, idx_hi   = range_1D_list[i] # (l0, Dl)
 
         # Converting in [ph/mn/bin]
@@ -1357,7 +1357,7 @@ def main():
     size_core          = 2                                     # Aperture size on which the signal is integrated [px]
     A_FWHM             = size_core**2                          # Number of pixel per FWHM box area
     Rc                 = 1_00                                  # MM cut-off resolution (Rc~100 is enough to reach ~1e-8 with speckles only, Rc~1000 would allows to go further (more conservative))
-    filter_type        = "gaussian"                            # MM filter type
+    filter_type        = "gaussian_fast"                       # MM filter type
     table_type         = "Archive"                             # "Archive": for all known exoplanets | "Simulated": TODO
 
 
@@ -1891,12 +1891,12 @@ def main():
                 range_1D_list[i] = (idx_lo, idx_hi)
 
                 # Tellurics x Telescope spectrum on the grid at this resolution
-                trans_tell_tel_1D_list[i] = trans_tell_tel.degrade_resolution(wave_res, renorm=False, R_output=res).flux
+                trans_tell_tel_1D_list[i] = trans_tell_tel.degrade_resolution(wave_res, renorm=False, R_output=res, filter_type=filter_type).flux
 
                 # Background spectrum on this grid in [ph/px/mn/bin]
-                background_res        = background.degrade_resolution(wave_res, renorm=False, R_output=res).flux # (len(wave_res))     [ph/mn/µm/mas2]
-                background_res       *= dwave_res                                                                # (len(wave_res))     [ph/mn/µm/mas2]  => [ph/mn/bin/mas2]
-                background_1D_list[i] = background_res.astype(dtype, copy=False)                                 # (len(wave_res))     [ph/mn/bin/mas2]
+                background_res        = background.degrade_resolution(wave_res, renorm=False, R_output=res, filter_type=filter_type).flux # (len(wave_res))     [ph/mn/µm/mas2]
+                background_res       *= dwave_res                                                                                         # (len(wave_res))     [ph/mn/µm/mas2]  => [ph/mn/bin/mas2]
+                background_1D_list[i] = background_res.astype(dtype, copy=False)                                                          # (len(wave_res))     [ph/mn/bin/mas2]
 
 
             # --- Global context worker ---
