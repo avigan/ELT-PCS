@@ -6,11 +6,10 @@ os.environ["NUMEXPR_NUM_THREADS"]  = "1"
 os.environ["NUMBA_NUM_THREADS"]    = "1"
 
 # import FastYield modules
-import fastyield.config as config
+# import fastyield.config as config
 # config.dpi_fig = 72
 
 from fastyield.config import rad2arcsec, h, c, R0_min, R0_max, lmin_bands, lmax_bands, archive_path, simulated_path, get_sim_data_path, dpi_fig
-from fastyield.utils import plot_trans_tell_tel, plot_bkg_skycalc
 from fastyield.get_specs import load_tell_trans, get_detector_specs
 from fastyield.FastYield import load_planet_table, get_filename_table, get_mask_planet_type, yield_population_plot, yield_heatmap_ELT
 from fastyield.FastYield_helpers import print_simulation_summary, make_suffix, write_meta, memmap_nbytes, format_nbytes, create_memmap_with_log
@@ -195,6 +194,20 @@ def window_nanmax_1d(values, idx_lo, idx_hi):
         else:
             out[ind] = 0.0
     return out
+
+def window_sigma_al_spec_1d(g, norm2, idx_lo, idx_hi):
+    """
+    Compute the spectral-aliasing covariance term for all spectral windows.
+
+    Equivalent to compute_sigma_base_2_al_spec_fast(g[lo:hi] / sqrt(norm2))
+    for each valid window, up to floating-point rounding.
+    """
+    g         = np.nan_to_num(np.asarray(g), nan=0.0, posinf=0.0, neginf=0.0)
+    s0        = window_sums_1d(g**2, idx_lo, idx_hi)
+    s1        = window_sums_1d(g[:-1] * g[1:], idx_lo, np.maximum(idx_lo, idx_hi - 1))
+    s2        = window_sums_1d(g[:-2] * g[2:], idx_lo, np.maximum(idx_lo, idx_hi - 2))
+    numerator = s0 + 0.5 * s1 + (2.0 / 256.0) * s2
+    return np.divide(np.maximum(numerator, 0.0), norm2, out=np.zeros_like(norm2, dtype=float), where=np.isfinite(norm2) & (norm2 > 0))
 
 def get_valid_IFU_windows(R, l0, Dl, Nl_max, Nl_min=3):
     """
@@ -497,6 +510,9 @@ def process_IFU(idx):
         # depends on the compressed wavelength grid, the local pxscale, and the exact
         # normalized h_PP vector in each window. We therefore keep the small (j, k)
         # loop only for sigma_syst_base_2.
+        if post_processing == "MM":
+            g_i              = trans_tell_tel_star_i * T_i
+            sigma_al_spec_2D = window_sigma_al_spec_1d(g=g_i, norm2=norm2_2D, idx_lo=idx_lo, idx_hi=idx_hi)
         for j in range(N_l0):
             pxscale_rad = pxscales_rad[j]
             for k in range(N_Dl):
@@ -523,10 +539,8 @@ def process_IFU(idx):
                 if post_processing == "DI":
                     sigma_syst_base_2_3D[i, j, k] = compute_sigma_base_2_speck_numba(h=h_PP_c, wave=wave_c, separation_rad=separation_planet_rad_arr, D=D)[0]
                 elif post_processing == "MM":
-                    sigma_base_2_al_spat          = compute_sigma_base_2_al_spat_numba(h=h_PP_c, wave=wave_c, separation_rad=separation_planet_rad_arr, pxscale_rad=pxscale_rad)[0]
-                    sigma_base_2_al_spec          = compute_sigma_base_2_al_spec_fast(h=h_PP_native)[0]
-                    sigma_syst_base_2_3D[i, j, k] = 0.5 * (sigma_base_2_al_spec + sigma_base_2_al_spat)
-        
+                    sigma_base_2_al_spat = compute_sigma_base_2_al_spat_numba(h=h_PP_c, wave=wave_c, separation_rad=separation_planet_rad_arr, pxscale_rad=pxscale_rad)[0]
+                    sigma_syst_base_2_3D[i, j, k] = 0.5 * (sigma_al_spec_2D[j, k] + sigma_base_2_al_spat)
         invalid                          = ~valid_windows_i
         signal_3D[i, invalid]            = np.nan
         sigma_halo_2_3D[i, invalid]      = np.nan
@@ -1125,8 +1139,6 @@ def interp_along_axis(values, axis, x0, axis_id):
 
 
 
-
-
 def reduce_hcube(hcube, dims_to_keep, params, params_ranges, params_priors, params_names, verbose=False, dtype=None):
     """
     Reduce an N-dimensional grid by fixing and/or marginalizing parameters.
@@ -1348,7 +1360,7 @@ def main():
     strehl             = "Q2"                                  # Sky atmospheric condition (1st quartile, 2nd, etc.)
     SNR_thr            = 5                                     # Detection threshold
     exposure_time      = 10*60                                 # Total exposure time per planet [mn]
-    force_new_calc     = False                                 # Forcing new simulations calculations
+    force_new_calc     = False                                  # Forcing new simulations calculations
     thermal_model      = "auto"                                # Model for the thermal spectrum of the planet ("auto", "None", "BT-Settl", "Exo-REM", "SONORA", "PICASO", "Saumon", etc.)
     reflected_model    = "auto"                                # Model for the albedo of the planet ("auto", "tellurics", "flat", "PICASO")
     instru_type        = instrument_concept['instru_type']     # Type of instrument ("IFU" or "imager")
@@ -1823,6 +1835,7 @@ def main():
         trans_tell_tel = Spectrum(wavelength=wave_instru, flux=trans_tell.flux*trans_tel.flux, R=np.fmax(trans_tell.R, trans_tel.R), T=None, lg=None, model=None, rv=None, vsini=None, sigma=None)
 
         # Plotting transmissions
+        # from fastyield.utils import plot_trans_tell_tel, plot_bkg_skycalc
         # plot_trans_tell_tel(trans_tell=trans_tell, trans_tel=trans_tel)
 
         # Background spectrum [ph/mas2/mn/µm] (from SkyCalc)
@@ -2709,17 +2722,7 @@ def main():
             changed = not np.allclose(requested, used)
             if changed:
                 warning = f"(WARNING: cropped to [{axis[0]:g}, {axis[-1]:g}])"
-            print_range(key, value, format_range(params_ranges_pop[idx]) if changed else None, warning)        
-        if instru_type == "IFU" and Nl_max is not None:
-            for key in ("R", "l0", "Dl"):
-                idx = next((i for i, name in enumerate(params_names) if name == key or name.startswith(key + " ")), None)
-                if idx is None:
-                    continue
-                pmin, pmax = params_ranges_pop[idx]
-                if pmin == pmax:
-                    axis = np.asarray(params[idx], dtype=float)
-                    if not np.any(np.isclose(axis, pmin, rtol=1e-10, atol=1e-12)):
-                        raise ValueError(f"Fixed {key}={pmin:g} is not on the simulated grid. With Nl_max={Nl_max}, choose an existing grid point to avoid interpolation across an instrument-validity boundary.")
+            print_range(key, value, format_range(params_ranges_pop[idx]) if changed else None, warning)
         print()
 
     # Best-Pdet configuration
