@@ -403,7 +403,7 @@ def process_IFU(idx):
     sigma_bkg_2_3D       = np.zeros((N_R, N_l0, N_Dl), dtype=dtype) # = sum (background * template**2)       (R, l0, Dl) [ph/px/mn]
     sigma_syst_base_2_3D = np.zeros((N_R, N_l0, N_Dl), dtype=dtype) # = sigma_syst,base**2                   (R, l0, Dl) [ph/mn]**2
     for i, res in enumerate(R):
-        
+
         valid_windows_i = valid_windows_3D[i]
         if not np.any(valid_windows_i):
             signal_3D[i]            = np.nan
@@ -412,7 +412,7 @@ def process_IFU(idx):
             sigma_bkg_2_3D[i]       = np.nan
             sigma_syst_base_2_3D[i] = np.nan
             continue
-                
+
         wave_i           = wave_1D_list[i]
         dwave_i          = dwave_1D_list[i]
         trans_tell_tel_i = trans_tell_tel_1D_list[i]
@@ -972,12 +972,12 @@ def get_Pdet(mask_detections, FoV, p0_FoV, dtype, indices=None, target_chunk_mb=
 
     shape_grid = mask_detections.shape[1:]  # (...grid..., sigma_m)
     N_FoV      = len(FoV)
-    
+
     def apply_validity_mask(Pdet):
         if valid_windows_3D is not None:
             Pdet[~valid_windows_3D] = np.nan
         return Pdet
-    
+
     # buckets[..., p] = sum of detection masks for planets with gating index p0 = p
     buckets = np.zeros(shape_grid + (N_FoV,), dtype=np.uint32)
 
@@ -1351,7 +1351,7 @@ def main():
 
     # --- Instrument concept ---
     # One YAML file per concept in instrument_concepts/ (ifu_global, imager_global, concept_A_highres_vis_ifu, ...)
-    concept_name       = "ifu_global"
+    concept_name       = "concept_A_highres_vis_ifu_band=V"
     instrument_concept = load_instrument_concept(concept_name)
 
     # --- General parameters for the simulation ---
@@ -1695,7 +1695,7 @@ def main():
                 raise ValueError(f"Invalid PCS PSF shape: {array.shape}, expected {expected_shape}.")
         for requested, available in ((l0, wave0), (r_WFE, r_WFE0), (IWA, IWA0)):
             if np.min(requested) < available[0] - 1e-6 or np.max(requested) > available[-1] + 1e-6:
-                raise ValueError("Requested parameters outside PCS PSF grid.")        
+                raise ValueError("Requested parameters outside PCS PSF grid.")
 
         # Keeping the raw mag_star and separation axis
         mag_star   = mag_star0.astype(dtype,   copy=False)
@@ -2028,7 +2028,7 @@ def main():
     alpha              = 0.9                 # Opacity
     gain               = True                # True for probability gain (normalized yield), False for absolute yields
     light_regime_plot  = "thermal+reflected" # 'thermal", "reflected" or "thermal+reflected"
-    band_regime_plot   =  "J"                # Band where the thermal/reflected domination regime is splitted
+    band_regime_plot   =  "V"                # Band where the thermal/reflected domination regime is splitted
     ptypes             = ["Jupiter",                 "Saturn",                "Neptune",                 "Earth"]
     marker_ptypes      = {"Jupiter": "s",            "Saturn": "v",           "Neptune": "P",            "Earth": "o"}
     label_ptypes       = {"Jupiter": "Jupiter-like", "Saturn": "Saturn-like", "Neptune": "Neptune-like", "Earth": "Earth-like"}
@@ -2254,7 +2254,7 @@ def main():
     for ipanel, idim in enumerate(plot_order):
         for jpanel, jdim in enumerate(plot_order):
             ax = axes[ipanel, jpanel]
-            ax.tick_params(axis="both", which="major", labelsize=12)
+            ax.tick_params(axis="both", which="both", labelsize=12)
             if jpanel > ipanel:
                 ax.axis("off")
                 continue
@@ -2264,7 +2264,8 @@ def main():
                 ax.step(params[idim], pdet_1D, color="k", where="mid")
                 ax.axvline(params_max[idim], color="k", linestyle="--")
                 ax.set_yticks([])
-                ax.set_xlabel(params_names_l[idim], fontsize=14)
+                if ipanel == Ndim - 1:
+                    ax.set_xlabel(params_names_l[idim], fontsize=14)
                 if params_isint[idim]:
                     ax.set_title(f"{params_names_l[idim]} = {round(params_max[idim], -2):.0f}", fontsize=11)
                 elif params_islog[idim] and params_names[idim] != "IWA [lambda0/D]":
@@ -2301,10 +2302,11 @@ def main():
                 if params_islog[idim]:
                     ax.set_yscale("log")
 
+            # Hide major and minor tick labels (log axes spanning < 1 decade label their minor ticks)
             if ipanel < Ndim - 1:
-                ax.set_xticklabels([])
+                ax.tick_params(axis="x", which="both", labelbottom=False)
             if jpanel > 0:
-                ax.set_yticklabels([])
+                ax.tick_params(axis="y", which="both", labelleft=False)
 
     title  = f"ELT/{instru} detection probability"
     title += f"\n{exposure_time/60:.0f}hr - {instru_type} with {post_processing}"
@@ -2570,7 +2572,7 @@ def main():
     # HEATMAP: BAND x RESOLUTION / BANDWIDTH HEATMAPS PER PLANET TYPE AND LIGHT REGIME
 
     ptypes_heatmap = ["Jupiter", "Saturn", "Neptune", "Earth"]
-    bands_plot     = ["R", "I", "Y", "J", "H", "K"]
+    bands_plot     = ["V", "R", "I", "Y", "J", "H", "K"]
     heatmap_mode   = "marginalized" # "marginalized" or "max"
     regimes_plot   = [regime for regime in ["thermal", "reflected"] if regime in light_regime_plot]
     if not regimes_plot:
@@ -2647,7 +2649,7 @@ def main():
     # POPULATION DIAGNOSTICS
 
     # Band used for the contrast shown on the y-axis
-    band_contrast_plot = "J"
+    band_contrast_plot = "V"
 
     # Choose how the detection status is defined for population plots.
     # "max"          : use the SNR at the global maximum of the Pdet hypercube.
@@ -2656,14 +2658,18 @@ def main():
     snr_population_mode = "personalized"
 
     # Personalized ranges: scalar = fixed value, [min,max] = marginalized range, None = keep default params_ranges
-    R_plot            = 2900 #[30_000, 100_000] # [dimensionless]
-    l0_plot           = 1.23 #1.5               # [µm]
-    Dl_plot           = 0.5               # [µm]
+    R_plot            = 68_000 #[30_000, 100_000] # [dimensionless]
+    l0_plot           = 0.55 #1.5               # [µm]
+    Dl_plot           = 0.1               # [µm]
     r_WFE_plot        = r_WFE_ref         # [dimensionless]
     IWA_plot          = IWA_ref           # [lambda0_band/D]
     trans_instru_plot = 0.25 #[0.1, 0.5]  # [e-/ph]
-    sigma_m_plot      = 1e-1              # [%]
-    FoV_plot          = 1000              # [mas]
+    sigma_m_plot      = 1e-5 #[1e-2, 1e-1]              # [%]
+    FoV_plot          = 500              # [mas]
+
+    show_golden_sample = False
+    show_det_regions   = False
+    show_ptype_regions = False
 
     idx_FoV      = next(idx for idx, name in enumerate(params_names) if "FoV"     in name)
     idx_sigma_m  = next(idx for idx, name in enumerate(params_names) if "sigma_m" in name)
@@ -2779,7 +2785,7 @@ def main():
 
         SNR_plot = np.zeros(N_PT, dtype=float)
         for ip in tqdm(range(N_PT), desc="Marginalizing SNR over parameter grid"):
-            SNR_i        = np.asarray(SNR_planets[ip], dtype=float).squeeze()            
+            SNR_i        = np.asarray(SNR_planets[ip], dtype=float).squeeze()
             if instru_type == "IFU":
                 mask_shape = (valid_windows_reduced.shape + (1,) * (SNR_i.ndim - valid_windows_reduced.ndim))
                 SNR_i      = np.where(valid_windows_reduced.reshape(mask_shape), SNR_i, np.nan)
@@ -2820,7 +2826,7 @@ def main():
                 mask_shape = (valid_windows_reduced.shape + (1,) * (quantity.ndim - valid_windows_reduced.ndim))
                 quantity   = np.where(valid_windows_reduced.reshape(mask_shape), quantity, np.nan)
             return float(reduce_hcube(hcube=quantity, dims_to_keep=[], params=params_raw, params_ranges=params_ranges_raw, params_priors=params_priors_raw, params_names=params_names_raw, verbose=False))
-        
+
         var_halo = np.zeros(N_PT, dtype=float)
         var_bkg  = np.zeros(N_PT, dtype=float)
         var_RON  = np.zeros(N_PT, dtype=float)
@@ -2908,7 +2914,7 @@ def main():
     dominant_noise              = np.full(N_PT, "Unknown", dtype=object)
     dominant_noise[valid_noise] = noise_labels[np.nanargmax(noise_stack[:, valid_noise], axis=0)]
 
-    yield_population_plot(table=table_type, instru=instru, instru_type=instru_type, post_processing=post_processing, thermal_model=thermal_model, reflected_model=reflected_model, exposure_time=exposure_time, band_contrast_plot=band_contrast_plot, band_regime_plot=band_regime_plot, planet_table=planet_table, SNR_plot=SNR_plot, dominant_noise=dominant_noise, SNR_thr=SNR_thr, save_dir=sim_dir_concept, DL_mas=np.nan,show_golden_sample=True, show_det_regions=False, show_ptype_regions=False)
+    yield_population_plot(table=table_type, instru=instru, instru_type=instru_type, post_processing=post_processing, thermal_model=thermal_model, reflected_model=reflected_model, exposure_time=exposure_time, band_contrast_plot=band_contrast_plot, band_regime_plot=band_regime_plot, planet_table=planet_table, SNR_plot=SNR_plot, dominant_noise=dominant_noise, SNR_thr=SNR_thr, save_dir=sim_dir_concept, DL_mas=np.nan, show_golden_sample=show_golden_sample, show_det_regions=show_det_regions, show_ptype_regions=show_ptype_regions)
 
 
 
