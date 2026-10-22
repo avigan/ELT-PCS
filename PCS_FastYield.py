@@ -6,8 +6,8 @@ os.environ["NUMEXPR_NUM_THREADS"]  = "1"
 os.environ["NUMBA_NUM_THREADS"]    = "1"
 
 # import FastYield modules
-import fastyield.config as config
-config.dpi_fig = 72
+# import fastyield.config as config
+# config.dpi_fig = 72
 
 from fastyield.config import rad2arcsec, h, c, R0_min, R0_max, lmin_bands, lmax_bands, archive_path, simulated_path, get_sim_data_path, dpi_fig
 from fastyield.get_specs import load_tell_trans, get_detector_specs
@@ -90,7 +90,7 @@ def main():
 
     # --- Instrument concept ---
     # One YAML file per concept in instrument_concepts/ (ifu_global, imager_global, concept_A_highres_vis_ifu, ...)
-    concept_name       = "concept_A_highres_vis_ifu_band=RI"
+    concept_name       = "concept_A_highres_vis_ifu_band=VRI"
     instrument_concept = fyh.load_instrument_concept(concept_name)
 
     # --- General parameters for the simulation ---
@@ -1121,34 +1121,34 @@ def main():
         # Planet-type legend
         if ipanel ==2:
             handles_ptype = [Line2D([], [], ls="", marker=marker_ptypes[ptype], ms=ms, markerfacecolor="white", markeredgewidth=1.5, color="k", label=f"{label_ptypes[ptype]}") for ipt, ptype in enumerate(ptypes)]
-            leg_ptype = ax.legend(handles=handles_ptype, fontsize=fontsize, loc="upper left", frameon=True, edgecolor="gray", facecolor="white")#, title="Planet type", title_fontsize=fontsize + 4)
+            leg_ptype = ax.legend(handles=handles_ptype, fontsize='small', loc="upper left", frameon=True, edgecolor="gray", facecolor="white")#, title="Planet type", title_fontsize=fontsize + 4)
             ax.add_artist(leg_ptype)
 
         # Planet-regime legend
         if ipanel == 3 and light_regime_plot == "thermal+reflected":
             handles_regime = [Line2D([], [], ls="-", lw=lw + 2, color="C3", label="Thermal"), Line2D([], [], ls="-", lw=lw + 2, color="C0", label="Reflected")]
-            leg_regime = ax.legend(handles=handles_regime, fontsize=fontsize+2, loc="lower right", frameon=True, edgecolor="gray", facecolor="white")#, title="Planet-light regime", title_fontsize=fontsize + 4)
+            leg_regime = ax.legend(handles=handles_regime, fontsize='small', loc="lower right", frameon=True, edgecolor="gray", facecolor="white")#, title="Planet-light regime", title_fontsize=fontsize + 4)
             ax.add_artist(leg_regime)
 
         # Systematics budget with JWST/MIRI/MRS ~ 1%.
         if params_names[idim] == "sigma_m [%]" and post_processing == "MM":
             x0 = 1.0 # [%]
             ax.axvline(x0, c="k", ls="--", lw=lw)
-            ax.annotate("JWST/MIRI/MRS", xy=(x0, 0.5), xycoords=("data", "axes fraction"), xytext=(6, 0), textcoords="offset points", rotation=270, va="center", ha="left", fontsize=fontsize+4, color="k", bbox=dict(boxstyle="round,pad=0.2", fc="white", ec="gray", alpha=0.85), zorder=5, clip_on=True)
+            ax.annotate("JWST/MIRI/MRS", xy=(x0, 0.5), xycoords=("data", "axes fraction"), xytext=(6, 0), textcoords="offset points", rotation=270, va="center", ha="left", fontsize='small', color="k", bbox=dict(boxstyle="round,pad=0.2", fc="white", ec="gray", alpha=0.85), zorder=5, clip_on=True)
         if params_names[idim] == "sigma_m [%]" and post_processing == "DI":
             x0 = 0.1  # [%] = 1e-3 in fractional units with VLT/SPHERE PACO
             ax.axvline(x0, c="k", ls="--", lw=lw)
-            ax.annotate("Optimistic on-sky DI", xy=(x0, 0.5), xycoords=("data", "axes fraction"), xytext=(6, 0), textcoords="offset points", rotation=270, va="center", ha="left", fontsize=fontsize+4, color="k", bbox=dict(boxstyle="round,pad=0.2", fc="white", ec="gray", alpha=0.85), zorder=5, clip_on=True)
+            ax.annotate("Optimistic on-sky DI", xy=(x0, 0.5), xycoords=("data", "axes fraction"), xytext=(6, 0), textcoords="offset points", rotation=270, va="center", ha="left", fontsize='small', color="k", bbox=dict(boxstyle="round,pad=0.2", fc="white", ec="gray", alpha=0.85), zorder=5, clip_on=True)
 
         # r_WFE and IWA ref values
         if params_names[idim] == "r_WFE":
             x0 = r_WFE_ref # [dimensionless]
             ax.axvline(x0, c="k", ls="--", lw=lw)
-            ax.annotate("Nominal PCS AO performance (r_WFE=1)", xy=(x0, 0.5), xycoords=("data", "axes fraction"), xytext=(6, 0), textcoords="offset points", rotation=270, va="center", ha="left", fontsize=fontsize+4, color="k", bbox=dict(boxstyle="round,pad=0.2", fc="white", ec="gray", alpha=0.85), zorder=5, clip_on=True)
+            ax.annotate("Nominal AO perf.", xy=(x0, 0.5), xycoords=("data", "axes fraction"), xytext=(6, 0), textcoords="offset points", rotation=270, va="center", ha="left", fontsize='small', color="k", bbox=dict(boxstyle="round,pad=0.2", fc="white", ec="gray", alpha=0.85), zorder=5, clip_on=True)
         if params_names[idim] == "IWA [lambda0/D]":
             x0 = IWA_ref  # [lambda0_band/D]
             ax.axvline(x0, c="k", ls="--", lw=lw)
-            ax.annotate("PCS nominal FPM", xy=(x0, 0.5), xycoords=("data", "axes fraction"), xytext=(6, 0), textcoords="offset points", rotation=270, va="center", ha="left", fontsize=fontsize+4, color="k", bbox=dict(boxstyle="round,pad=0.2", fc="white", ec="gray", alpha=0.85), zorder=5, clip_on=True)
+            ax.annotate("PCS nominal FPM", xy=(x0, 0.5), xycoords=("data", "axes fraction"), xytext=(6, 0), textcoords="offset points", rotation=270, va="center", ha="left", fontsize='small', color="k", bbox=dict(boxstyle="round,pad=0.2", fc="white", ec="gray", alpha=0.85), zorder=5, clip_on=True)
 
     # Turn off unused panels
     for k in range(Ndim, nrows * ncols):
@@ -1268,21 +1268,21 @@ def main():
             if params_names[idim] == "sigma_m [%]" and post_processing == "MM":
                 x0 = 1.0 # [%]
                 ax.axvline(x0, c="k", ls="--", lw=lw)
-                ax.annotate("JWST/MIRI/MRS", xy=(x0, 0.5), xycoords=("data", "axes fraction"), xytext=(6, 0), textcoords="offset points", rotation=270, va="center", ha="left", fontsize=fontsize+4, color="k", bbox=dict(boxstyle="round,pad=0.2", fc="white", ec="gray", alpha=0.85), zorder=5, clip_on=True)
+                ax.annotate("JWST/MIRI/MRS", xy=(x0, 0.5), xycoords=("data", "axes fraction"), xytext=(6, 0), textcoords="offset points", rotation=270, va="center", ha="left", fontsize='small', color="k", bbox=dict(boxstyle="round,pad=0.2", fc="white", ec="gray", alpha=0.85), zorder=5, clip_on=True)
             if params_names[idim] == "sigma_m [%]" and post_processing == "DI":
                 x0 = 0.1  # [%] = 1e-3 in fractional units with VLT/SPHERE PACO
                 ax.axvline(x0, c="k", ls="--", lw=lw)
-                ax.annotate("Optimistic on-sky DI", xy=(x0, 0.5), xycoords=("data", "axes fraction"), xytext=(6, 0), textcoords="offset points", rotation=270, va="center", ha="left", fontsize=fontsize+4, color="k", bbox=dict(boxstyle="round,pad=0.2", fc="white", ec="gray", alpha=0.85), zorder=5, clip_on=True)
+                ax.annotate("Optimistic on-sky DI", xy=(x0, 0.5), xycoords=("data", "axes fraction"), xytext=(6, 0), textcoords="offset points", rotation=270, va="center", ha="left", fontsize='small', color="k", bbox=dict(boxstyle="round,pad=0.2", fc="white", ec="gray", alpha=0.85), zorder=5, clip_on=True)
 
             # r_WFE and IWA ref values
             if params_names[idim] == "r_WFE":
                 x0 = r_WFE_ref # [dimensionless]
                 ax.axvline(x0, c="k", ls="--", lw=lw)
-                ax.annotate("Nominal PCS AO performance (r_WFE=1)", xy=(x0, 0.5), xycoords=("data", "axes fraction"), xytext=(6, 0), textcoords="offset points", rotation=270, va="center", ha="left", fontsize=fontsize+4, color="k", bbox=dict(boxstyle="round,pad=0.2", fc="white", ec="gray", alpha=0.85), zorder=5, clip_on=True)
+                ax.annotate("Nominal AO perf.", xy=(x0, 0.5), xycoords=("data", "axes fraction"), xytext=(6, 0), textcoords="offset points", rotation=270, va="center", ha="left", fontsize='small', color="k", bbox=dict(boxstyle="round,pad=0.2", fc="white", ec="gray", alpha=0.85), zorder=5, clip_on=True)
             if params_names[idim] == "IWA [lambda0/D]":
                 x0 = IWA_ref  # [lambda0_band/D]
                 ax.axvline(x0, c="k", ls="--", lw=lw)
-                ax.annotate("PCS nominal FPM", xy=(x0, 0.5), xycoords=("data", "axes fraction"), xytext=(6, 0), textcoords="offset points", rotation=270, va="center", ha="left", fontsize=fontsize+4, color="k", bbox=dict(boxstyle="round,pad=0.2", fc="white", ec="gray", alpha=0.85), zorder=5, clip_on=True)
+                ax.annotate("PCS nominal FPM", xy=(x0, 0.5), xycoords=("data", "axes fraction"), xytext=(6, 0), textcoords="offset points", rotation=270, va="center", ha="left", fontsize='small', color="k", bbox=dict(boxstyle="round,pad=0.2", fc="white", ec="gray", alpha=0.85), zorder=5, clip_on=True)
 
         # Turn off unused panels
         for k in range(Ndim, nrows * ncols):
@@ -1403,7 +1403,7 @@ def main():
     # POPULATION DIAGNOSTICS
 
     # Band used for the contrast shown on the y-axis
-    band_contrast_plot = "V"
+    band_contrast_plot = "I"
 
     # Choose how the detection status is defined for population plots.
     # "max"          : use the SNR at the global maximum of the Pdet hypercube.
@@ -1413,15 +1413,15 @@ def main():
 
     # Personalized ranges: scalar = fixed value, [min,max] = marginalized range, None = keep default params_ranges
     R_plot            = 68_000 #[30_000, 100_000] # [dimensionless]
-    l0_plot           = 0.55 #1.5               # [µm]
-    Dl_plot           = 0.1               # [µm]
+    l0_plot           = 0.9 #1.5               # [µm]
+    Dl_plot           = 0.4               # [µm]
     r_WFE_plot        = r_WFE_ref         # [dimensionless]
     IWA_plot          = IWA_ref           # [lambda0_band/D]
     trans_instru_plot = 0.25 #[0.1, 0.5]  # [e-/ph]
     sigma_m_plot      = 1e-2 #[1e-2, 1e-1]              # [%]
-    FoV_plot          = 500              # [mas]
+    FoV_plot          = 300              # [mas]
 
-    show_golden_sample = False
+    show_golden_sample = True
     show_det_regions   = False
     show_ptype_regions = False
 

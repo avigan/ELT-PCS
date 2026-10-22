@@ -6,8 +6,8 @@ os.environ["NUMEXPR_NUM_THREADS"]  = "1"
 os.environ["NUMBA_NUM_THREADS"]    = "1"
 
 # import FastYield modules
-import fastyield.config as config
-config.dpi_fig = 72
+# import fastyield.config as config
+# config.dpi_fig = 72
 
 from fastyield.config import rad2arcsec
 from fastyield.FastYield import get_filename_table
