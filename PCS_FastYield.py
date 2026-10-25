@@ -767,7 +767,7 @@ def main():
     alpha              = 0.9                 # Opacity
     gain               = True                # True for probability gain (normalized yield), False for absolute yields
     light_regime_plot  = "thermal+reflected" # 'thermal", "reflected" or "thermal+reflected"
-    band_regime_plot   =  "V"                # Band where the thermal/reflected domination regime is splitted
+    band_regime_plot   =  "I"                # Band where the thermal/reflected domination regime is splitted
     ptypes             = ["Jupiter",                 "Saturn",                "Neptune",                 "Earth"]
     marker_ptypes      = {"Jupiter": "s",            "Saturn": "v",           "Neptune": "P",            "Earth": "o"}
     label_ptypes       = {"Jupiter": "Jupiter-like", "Saturn": "Saturn-like", "Neptune": "Neptune-like", "Earth": "Earth-like"}
@@ -1405,6 +1405,12 @@ def main():
     # Band used for the contrast shown on the y-axis
     band_contrast_plot = "I"
 
+    # Choose in wich space the planet populations are plotted
+    # "instr" : instrumental space (contrast vs. angular separation)
+    # "phys"  : physical space (mass vs. projected semi-major axis)
+    # "both"  : combine the plots in two panels
+    planet_population_space = 'phys'
+
     # Choose how the detection status is defined for population plots.
     # "max"          : use the SNR at the global maximum of the Pdet hypercube.
     # "marginalized" : use the default params_ranges.
@@ -1418,10 +1424,10 @@ def main():
     r_WFE_plot        = r_WFE_ref         # [dimensionless]
     IWA_plot          = IWA_ref           # [lambda0_band/D]
     trans_instru_plot = 0.25 #[0.1, 0.5]  # [e-/ph]
-    sigma_m_plot      = 1e-2 #[1e-2, 1e-1]              # [%]
+    sigma_m_plot      = 1e-0 #[1e-2, 1e-1]              # [%]
     FoV_plot          = 300              # [mas]
 
-    show_golden_sample = True
+    show_golden_sample = False
     show_det_regions   = False
     show_ptype_regions = False
 
@@ -1668,7 +1674,7 @@ def main():
     dominant_noise              = np.full(N_PT, "Unknown", dtype=object)
     dominant_noise[valid_noise] = noise_labels[np.nanargmax(noise_stack[:, valid_noise], axis=0)]
 
-    yield_population_plot(table=table_type, instru=instru, instru_type=instru_type, post_processing=post_processing, thermal_model=thermal_model, reflected_model=reflected_model, exposure_time=exposure_time, band_contrast_plot=band_contrast_plot, band_regime_plot=band_regime_plot, planet_table=planet_table, SNR_plot=SNR_plot, dominant_noise=dominant_noise, SNR_thr=SNR_thr, save_dir=sim_dir_concept, DL_mas=np.nan, show_golden_sample=show_golden_sample, show_det_regions=show_det_regions, show_ptype_regions=show_ptype_regions)
+    yield_population_plot(table=table_type, instru=instru, instru_type=instru_type, post_processing=post_processing, thermal_model=thermal_model, reflected_model=reflected_model, exposure_time=exposure_time, band_contrast_plot=band_contrast_plot, band_regime_plot=band_regime_plot, planet_table=planet_table, SNR_plot=SNR_plot, dominant_noise=dominant_noise, SNR_thr=SNR_thr, save_dir=sim_dir_concept, DL_mas=np.nan, show_golden_sample=show_golden_sample, show_det_regions=show_det_regions, show_ptype_regions=show_ptype_regions, space=planet_population_space)
 
 
 
