@@ -90,8 +90,8 @@ def main():
 
     # --- Instrument concept ---
     # One YAML file per concept in instrument_concepts/ (ifu_global, imager_global, concept_A_highres_vis_ifu, ...)
-    #concept_name       = "concept_A_highres_vis_ifu_band=VRIz"
-    concept_name       = "concept_Ab_highres_nir_ifu_band=zYJ.yaml"
+    concept_name       = "concept_A_highres_vis_ifu_band=VRIz"
+    #concept_name       = "concept_Ab_highres_nir_ifu_band=zYJ"
     #concept_name       = "ifu_global"
     instrument_concept = fyh.load_instrument_concept(concept_name)
 
@@ -139,9 +139,9 @@ def main():
     band_contrast_plot = "I"
 
     # Choose in wich space the planet populations are plotted
-    # "instr" : instrumental space (contrast vs. angular separation)
-    # "phys"  : physical space (mass vs. projected semi-major axis)
-    # "both"  : combine the plots in two panels
+    # "obs"  : observationnal space (contrast vs. angular separation)
+    # "phys" : physical space (mass vs. projected semi-major axis)
+    # "both" : combine the plots in two panels
     planet_population_space = 'phys'
 
     # Choose how the detection status is defined for population plots.
@@ -150,7 +150,7 @@ def main():
     # "personalized" : use custom parameter ranges defined below.
     snr_population_mode = "personalized"
 
-    # Standard definition of the photometric bands
+    # Definition of the standard photometric bands
     # band | l0   | dl
     # --------------------------
     # V    | 0.55 | 0.09
@@ -164,9 +164,9 @@ def main():
 
     # Personalized ranges: scalar = fixed value, [min,max] = marginalized range, None = keep default params_ranges
     R_plot            = 80_000           # [dimensionless]
-    l0_plot           = 0.90            # [µm]
-    Dl_plot           = 0.15             # [µm]
-    r_WFE_plot        = r_WFE_ref        # [dimensionless]
+    l0_plot           = 0.74            # [µm]
+    Dl_plot           = 0.24             # [µm]
+    r_WFE_plot        = 1.0 #r_WFE_ref        # [dimensionless]
     IWA_plot          = IWA_ref          # [lambda0_band/D]
     trans_instru_plot = 0.25             # [e-/ph]
     sigma_m_plot      = 0.01  #[0.01, 0.1]              # [%]
