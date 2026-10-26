@@ -91,8 +91,8 @@ def main():
     # --- Instrument concept ---
     # One YAML file per concept in instrument_concepts/ (ifu_global, imager_global, concept_A_highres_vis_ifu, ...)
     concept_name       = "concept_A_highres_vis_ifu_band=VRIz"
-    #concept_name       = "concept_Ab_highres_nir_ifu_band=zYJ"
-    #concept_name       = "ifu_global"
+    # concept_name       = "concept_Ab_highres_nir_ifu_band=zYJ"
+    # concept_name       = "ifu_global"
     instrument_concept = fyh.load_instrument_concept(concept_name)
 
     # --- General parameters for the simulation ---
@@ -100,7 +100,7 @@ def main():
     apodizer           = "NO_SP"                               # Shaped pupil mask (NO_SP => no mask)
     strehl             = "Q2"                                  # Sky atmospheric condition (1st quartile, 2nd, etc.)
     SNR_thr            = 5                                     # Detection threshold
-    exposure_time      = 30*60                                 # Total exposure time per planet [mn]
+    exposure_time      = 10*60                                 # Total exposure time per planet [mn]
     force_new_calc     = False                                  # Forcing new simulations calculations
     thermal_model      = "auto"                                # Model for the thermal spectrum of the planet ("auto", "None", "BT-Settl", "Exo-REM", "SONORA", "PICASO", "Saumon", etc.)
     reflected_model    = "auto"                                # Model for the albedo of the planet ("auto", "tellurics", "flat", "PICASO")
@@ -146,7 +146,7 @@ def main():
     # "obs"  : observationnal space (contrast vs. angular separation)
     # "phys" : physical space (mass vs. projected semi-major axis)
     # "both" : combine the plots in two panels
-    planet_population_space = 'phys'
+    planet_population_space = 'obs'
 
     # Choose how the detection status is defined for population plots.
     # "max"          : use the SNR at the global maximum of the Pdet hypercube.
@@ -168,24 +168,13 @@ def main():
 
     # Personalized ranges: scalar = fixed value, [min,max] = marginalized range, None = keep default params_ranges
 
-    # VRIz
     R_plot            = 80_000           # [dimensionless]
     l0_plot           = 0.74            # [µm]
     Dl_plot           = 0.48             # [µm]
-    r_WFE_plot        = 1.0 #r_WFE_ref        # [dimensionless]
+    r_WFE_plot        = 1.25 #r_WFE_ref        # [dimensionless]
     IWA_plot          = IWA_ref          # [lambda0_band/D]
-    trans_instru_plot = 0.25             # [e-/ph]
-    sigma_m_plot      = 0#0.01             # [%]
-    FoV_plot          = 300              # [mas]
-
-    # z
-    R_plot            = 80_000           # [dimensionless]
-    l0_plot           = 0.90             # [µm]
-    Dl_plot           = 0.15             # [µm]
-    r_WFE_plot        = 1.0              # [dimensionless]
-    IWA_plot          = IWA_ref          # [lambda0_band/D]
-    trans_instru_plot = 0.25             # [e-/ph]
-    sigma_m_plot      = 0#0.01             # [%]
+    trans_instru_plot = 0.5             # [e-/ph]
+    sigma_m_plot      = 0.01             # [%]
     FoV_plot          = 300              # [mas]
 
     show_golden_sample = False
