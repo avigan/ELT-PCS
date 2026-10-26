@@ -100,7 +100,7 @@ def main():
     apodizer           = "NO_SP"                               # Shaped pupil mask (NO_SP => no mask)
     strehl             = "Q2"                                  # Sky atmospheric condition (1st quartile, 2nd, etc.)
     SNR_thr            = 5                                     # Detection threshold
-    exposure_time      = 10*60                                 # Total exposure time per planet [mn]
+    exposure_time      = 30*60                                 # Total exposure time per planet [mn]
     force_new_calc     = False                                  # Forcing new simulations calculations
     thermal_model      = "auto"                                # Model for the thermal spectrum of the planet ("auto", "None", "BT-Settl", "Exo-REM", "SONORA", "PICASO", "Saumon", etc.)
     reflected_model    = "auto"                                # Model for the albedo of the planet ("auto", "tellurics", "flat", "PICASO")
@@ -165,7 +165,7 @@ def main():
     # Personalized ranges: scalar = fixed value, [min,max] = marginalized range, None = keep default params_ranges
     R_plot            = 80_000           # [dimensionless]
     l0_plot           = 0.74            # [µm]
-    Dl_plot           = 0.24             # [µm]
+    Dl_plot           = 0.48             # [µm]
     r_WFE_plot        = 1.0 #r_WFE_ref        # [dimensionless]
     IWA_plot          = IWA_ref          # [lambda0_band/D]
     trans_instru_plot = 0.25             # [e-/ph]
