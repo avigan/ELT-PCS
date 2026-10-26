@@ -82,8 +82,8 @@ mag_star_min, mag_star_max = 0, 10
 sep_max                    = 1_000          # [mas]
 
 N_r_WFE_base = 20
-N_IWA_base = 20
-N_sep_log  = 1_000
+N_IWA_base   = 20
+N_sep_log    = 1_000
 
 # SUMMARY wavelength axis is implicit in README.md.
 raw_wave_min  = 0.5 # [um]
