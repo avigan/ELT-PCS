@@ -99,9 +99,10 @@ def main():
     coronagraph        = "APLC"                                # "CLC", "APLC", or None; matches PCS SUMMARY FITS labels
     apodizer           = "NO_SP"                               # Shaped pupil mask (NO_SP => no mask)
     strehl             = "Q2"                                  # Sky atmospheric condition (1st quartile, 2nd, etc.)
+    band_WFS           = "z"                                   # Photometric band of the stellar magnitude axis (WFS) in the PCS PSF simulations
     SNR_thr            = 5                                     # Detection threshold
-    exposure_time      = 30*60                                 # Total exposure time per planet [mn]
-    force_new_calc     = False                                  # Forcing new simulations calculations
+    exposure_time      = 10*60                                 # Total exposure time per planet [mn]
+    force_new_calc     = False                                 # Forcing new simulations calculations
     thermal_model      = "auto"                                # Model for the thermal spectrum of the planet ("auto", "None", "BT-Settl", "Exo-REM", "SONORA", "PICASO", "Saumon", etc.)
     reflected_model    = "auto"                                # Model for the albedo of the planet ("auto", "tellurics", "flat", "PICASO")
     instru_type        = instrument_concept['instru_type']     # Type of instrument ("IFU" or "imager")
@@ -134,7 +135,7 @@ def main():
     # --- Plots configuration ---
     plot_global_results = False
     plot_populations    = True
-
+    
     # Choose which planet population (thermal/reflected) to plot (defined in the 'band_plot').
     # NB: if thermal_model = "None", light_regime_plot will be forced to be "reflected" (and vice versa)
     light_regime_plot = "thermal+reflected" # 'thermal", "reflected" or "thermal+reflected"
@@ -167,27 +168,17 @@ def main():
     # K    | 2.19 | 0.39
 
     # Personalized ranges: scalar = fixed value, [min,max] = marginalized range, None = keep default params_ranges
-
+    
     # VRIz
     R_plot            = 80_000           # [dimensionless]
-    l0_plot           = 0.74            # [µm]
+    l0_plot           = 0.74             # [µm]
     Dl_plot           = 0.48             # [µm]
-    r_WFE_plot        = 1.0 #r_WFE_ref        # [dimensionless]
-    IWA_plot          = IWA_ref          # [lambda0_band/D]
-    trans_instru_plot = 0.25             # [e-/ph]
-    sigma_m_plot      = 0#0.01             # [%]
-    FoV_plot          = 300              # [mas]
-
-    # z
-    R_plot            = 80_000           # [dimensionless]
-    l0_plot           = 0.90             # [µm]
-    Dl_plot           = 0.15             # [µm]
     r_WFE_plot        = 1.0              # [dimensionless]
     IWA_plot          = IWA_ref          # [lambda0_band/D]
     trans_instru_plot = 0.25             # [e-/ph]
-    sigma_m_plot      = 0#0.01             # [%]
+    sigma_m_plot      = 0.01             # [%]
     FoV_plot          = 300              # [mas]
-
+    
     show_golden_sample = False
     show_det_regions   = False
     show_ptype_regions = False
@@ -354,22 +345,20 @@ def main():
     separation_planets = planet_table["AngSep"].value # [mas]
     N_PT               = len(planet_table)
     print(f"\nKeeping {N_PT}/{N_PT_raw} planets between {sep_min:.0f} and {sep_max:.0f} mas in thermal and reflected light")
+    if N_PT == 0:
+        raise ValueError("No planets remain after the separation selection")
 
     # Prints simulation parameters
     print_simulation_summary(instru=instru, instru_type=instru_type, detector=detector, post_processing=post_processing, D=D, S=S, N_mirror=N_mirror, trans_dust=trans_dust, RON0=RON0, RON_lim=RON_lim, DC0=DC0, saturation_e=saturation_e, min_DIT=min_DIT, max_DIT=max_DIT, coronagraph=coronagraph, apodizer=apodizer, strehl=strehl, thermal_model=thermal_model, reflected_model=reflected_model, SNR_thr=SNR_thr, exposure_time=exposure_time, size_core=size_core, A_FWHM=A_FWHM, Rc=Rc if instru_type == "IFU" else None, filter_type=filter_type if instru_type == "IFU" else None, table_type=table_type, sep_min=sep_min, sep_max=sep_max, N_PT_raw=N_PT_raw, N_PT=N_PT, force_new_calc=force_new_calc, l0=l0, R=R if instru_type == "IFU" else None, Dl=Dl, WFE=r_WFE, IWA=IWA, trans_instru=trans_instru, sigma_m=sigma_m, FoV=FoV)
 
-    if N_PT == 0:
-        raise ValueError("No planets remain after the separation selection")
-    # Fail before costly PSF computations if the input table lacks stellar V photometry.
-    vmag_check   = np.array([fyh.get_star_vmag(planet) for planet in planet_table], dtype=float)
-    outside_vmag = (vmag_check < 0.0) | (vmag_check > 10.0)
-    if np.any(outside_vmag):
-        print(f"WARNING: {np.count_nonzero(outside_vmag)} stars are outside the simulated V=[0,10] range; PSF magnitude interpolation will clamp to the nearest boundary")
-    print(f"\nPCS stellar V-band photometry: [{vmag_check.min():.2f}, {vmag_check.max():.2f}] mag")
-
     # The shared legacy summary helper calls its argument 'WFE'; it receives r_WFE
     # for API compatibility. Its WFE/IWA unit annotations are NOT authoritative here.
-    print(f"\nPCS PSF axes (authoritative): r_WFE={r_WFE} [dimensionless]; IWA={IWA} [lambda0_band/D]; mag_star=stellar V-band magnitude")
+    mag_check   = np.array([fyh.get_star_mag(planet, band_WFS) for planet in planet_table], dtype=float)
+    outside_mag = (mag_check < 0.0) | (mag_check > 10.0)
+    if np.any(outside_mag):
+        print(f"WARNING: {np.count_nonzero(outside_mag)} stars are outside the simulated {band_WFS}=[0,10] magnitude range; PSF interpolation will clamp to the nearest boundary.")
+    print(f"\nPCS stellar {band_WFS}-band photometry: [{mag_check.min():.2f}, {mag_check.max():.2f}] mag")
+    print(f"\nPCS PSF axes (authoritative): r_WFE={r_WFE} [dimensionless]; IWA={IWA} [lambda0_band/D]; mag_star=stellar {band_WFS}-band magnitude")
 
     # Build meta for YOUR case (IFU or imager)
     meta = dict(code_version=PCS_CODE_VERSION, dtype=str(dtype),
@@ -381,7 +370,7 @@ def main():
                 RON0=RON0, RON_lim=RON_lim, DC0=DC0, saturation_e=saturation_e, min_DIT=min_DIT, max_DIT=max_DIT,
 
                 # science / pipeline
-                coronagraph=coronagraph, apodizer=apodizer, strehl=strehl, thermal_model=thermal_model, reflected_model=reflected_model, instru_type=instru_type, post_processing=post_processing, size_core=size_core, R_model=R_model, table_type=table_type,
+                coronagraph=coronagraph, apodizer=apodizer, band_WFS=band_WFS, strehl=strehl, thermal_model=thermal_model, reflected_model=reflected_model, instru_type=instru_type, post_processing=post_processing, size_core=size_core, R_model=R_model, table_type=table_type,
 
                 # exploration space
                 l0_min=l0_min, l0_max=l0_max, r_WFE_min=r_WFE_min, r_WFE_max=r_WFE_max, IWA_min=IWA_min, IWA_max=IWA_max, trans_instru_min=trans_instru_min, trans_instru_max=trans_instru_max, sep_min=sep_min, sep_max=sep_max, N_PT=N_PT,
@@ -638,7 +627,7 @@ def main():
         background       = data_bkg["flux"] * 60 * S / 1000**2 # [ph/s/m2/µm/arcsec2] => [ph/mas2/mn/µm]
         background       = Spectrum(wavelength=wave_bkg, flux=background).interpolate_wavelength(wave_output=wave_instru, renorm=False, fill_value=(background[0], background[-1])) # [ph/mas2/mn/µm]
         background.flux *= trans_tel.flux # [ph/mas2/mn/µm] through the telescope
-
+        
         # Plotting transmissions and bkg
         # from fastyield.utils import plot_trans_tell_tel, plot_bkg_skycalc
         # plot_trans_tell_tel(trans_tell=trans_tell, trans_tel=trans_tel)
@@ -711,7 +700,7 @@ def main():
 
 
             # --- Global context worker ---
-            _IFU_CTX = dict(planet_table=planet_table, A_FWHM=A_FWHM, separation=separation, thermal_model=thermal_model, reflected_model=reflected_model, post_processing=post_processing, wave_model=wave_model, wave_instru=wave_instru, wave_K=wave_K, counts_vega_K=counts_vega_K, mag_star=mag_star, scale_spectrum=scale_spectrum, N_R=N_R, N_l0=N_l0, N_Dl=N_Dl, R=R, wave_1D_list=wave_1D_list, dwave_1D_list=dwave_1D_list, trans_tell_tel_1D_list=trans_tell_tel_1D_list, trans_instru=trans_instru, background_1D_list=background_1D_list, pxscales=pxscales, Rc=Rc, filter_type=filter_type, range_1D_list=range_1D_list, valid_windows_3D=valid_windows_3D, saturation_e=saturation_e, min_DIT=min_DIT, max_DIT=max_DIT, PSF_profile_5D_path=str(PSF_profile_5D_tmp_path), fraction_core_5D_path=str(fraction_core_5D_tmp_path), PSF_profile_max_4D_path=str(PSF_profile_max_4D_tmp_path), signal_path=str(signal_path), sigma_halo_2_path=str(sigma_halo_2_path), sigma_bkg_2_path=str(sigma_bkg_2_path), DIT_path=str(DIT_path), sigma_syst_base_2_path=str(sigma_syst_base_2_path), dtype=dtype, D=D, pxscales_rad=pxscales_rad)
+            _IFU_CTX = dict(planet_table=planet_table, A_FWHM=A_FWHM, separation=separation, thermal_model=thermal_model, reflected_model=reflected_model, post_processing=post_processing, wave_model=wave_model, wave_instru=wave_instru, wave_K=wave_K, counts_vega_K=counts_vega_K, mag_star=mag_star, band_WFS=band_WFS, scale_spectrum=scale_spectrum, N_R=N_R, N_l0=N_l0, N_Dl=N_Dl, R=R, wave_1D_list=wave_1D_list, dwave_1D_list=dwave_1D_list, trans_tell_tel_1D_list=trans_tell_tel_1D_list, trans_instru=trans_instru, background_1D_list=background_1D_list, pxscales=pxscales, Rc=Rc, filter_type=filter_type, range_1D_list=range_1D_list, valid_windows_3D=valid_windows_3D, saturation_e=saturation_e, min_DIT=min_DIT, max_DIT=max_DIT, PSF_profile_5D_path=str(PSF_profile_5D_tmp_path), fraction_core_5D_path=str(fraction_core_5D_tmp_path), PSF_profile_max_4D_path=str(PSF_profile_max_4D_tmp_path), signal_path=str(signal_path), sigma_halo_2_path=str(sigma_halo_2_path), sigma_bkg_2_path=str(sigma_bkg_2_path), DIT_path=str(DIT_path), sigma_syst_base_2_path=str(sigma_syst_base_2_path), dtype=dtype, D=D, pxscales_rad=pxscales_rad)
 
 
             # --- Arguments for Pool ---
@@ -752,7 +741,7 @@ def main():
             background_flux_2D *= pxscales[:, None]**2                                                          # [ph/mn/mas2] => [ph/px/mn]
 
             # --- Global context worker ---
-            _IM_CTX = dict(planet_table=planet_table, A_FWHM=A_FWHM, separation=separation, thermal_model=thermal_model, reflected_model=reflected_model, post_processing=post_processing, wave_instru=wave_instru, wave_K=wave_K, counts_vega_K=counts_vega_K, mag_star=mag_star, scale_spectrum=scale_spectrum, N_l0=N_l0, N_Dl=N_Dl, trans_instru=trans_instru, trans_tell_tel=trans_tell_tel.flux, background_flux_2D=background_flux_2D, range_1D=range_1D, saturation_e=saturation_e, min_DIT=min_DIT, max_DIT=max_DIT, PSF_profile_5D_path=str(PSF_profile_5D_tmp_path), fraction_core_5D_path=str(fraction_core_5D_tmp_path), PSF_profile_max_4D_path=str(PSF_profile_max_4D_tmp_path), signal_path=str(signal_path), sigma_halo_2_path=str(sigma_halo_2_path), sigma_bkg_2_path=str(sigma_bkg_2_path), DIT_path=str(DIT_path), dtype=dtype)
+            _IM_CTX = dict(planet_table=planet_table, A_FWHM=A_FWHM, separation=separation, thermal_model=thermal_model, reflected_model=reflected_model, post_processing=post_processing, wave_instru=wave_instru, wave_K=wave_K, counts_vega_K=counts_vega_K, mag_star=mag_star, band_WFS=band_WFS, scale_spectrum=scale_spectrum, N_l0=N_l0, N_Dl=N_Dl, trans_instru=trans_instru, trans_tell_tel=trans_tell_tel.flux, background_flux_2D=background_flux_2D, range_1D=range_1D, saturation_e=saturation_e, min_DIT=min_DIT, max_DIT=max_DIT, PSF_profile_5D_path=str(PSF_profile_5D_tmp_path), fraction_core_5D_path=str(fraction_core_5D_tmp_path), PSF_profile_max_4D_path=str(PSF_profile_max_4D_tmp_path), signal_path=str(signal_path), sigma_halo_2_path=str(sigma_halo_2_path), sigma_bkg_2_path=str(sigma_bkg_2_path), DIT_path=str(DIT_path), dtype=dtype)
 
             # --- Arguments for Pool ---
             init_worker  = fyh.init_worker_IM
