@@ -167,13 +167,25 @@ def main():
     # K    | 2.19 | 0.39
 
     # Personalized ranges: scalar = fixed value, [min,max] = marginalized range, None = keep default params_ranges
+    
+    # VRIz
     R_plot            = 80_000           # [dimensionless]
     l0_plot           = 0.74             # [µm]
-    Dl_plot           = 0.24             # [µm]
+    Dl_plot           = 0.48             # [µm]
     r_WFE_plot        = 1.0              # [dimensionless]
     IWA_plot          = IWA_ref          # [lambda0_band/D]
     trans_instru_plot = 0.25             # [e-/ph]
-    sigma_m_plot      = 0.01             # [%]
+    sigma_m_plot      = 0#0.01             # [%]
+    FoV_plot          = 300              # [mas]
+    
+    # z
+    R_plot            = 80_000           # [dimensionless]
+    l0_plot           = 0.90             # [µm]
+    Dl_plot           = 0.15             # [µm]
+    r_WFE_plot        = 1.0              # [dimensionless]
+    IWA_plot          = IWA_ref          # [lambda0_band/D]
+    trans_instru_plot = 0.25             # [e-/ph]
+    sigma_m_plot      = 0#0.01             # [%]
     FoV_plot          = 300              # [mas]
 
     show_golden_sample = False
@@ -349,7 +361,7 @@ def main():
     if N_PT == 0:
         raise ValueError("No planets remain after the separation selection")
     # Fail before costly PSF computations if the input table lacks stellar V photometry.
-    vmag_check = np.array([fyh.get_star_vmag(planet) for planet in planet_table], dtype=float)
+    vmag_check   = np.array([fyh.get_star_vmag(planet) for planet in planet_table], dtype=float)
     outside_vmag = (vmag_check < 0.0) | (vmag_check > 10.0)
     if np.any(outside_vmag):
         print(f"WARNING: {np.count_nonzero(outside_vmag)} stars are outside the simulated V=[0,10] range; PSF magnitude interpolation will clamp to the nearest boundary")
@@ -620,17 +632,17 @@ def main():
         # Tellurics x telescope transmission spectrum
         trans_tell_tel = Spectrum(wavelength=wave_instru, flux=trans_tell.flux*trans_tel.flux, R=np.fmax(trans_tell.R, trans_tel.R), T=None, lg=None, model=None, rv=None, vsini=None, sigma=None)
 
-        # Plotting transmissions
-        # from fastyield.utils import plot_trans_tell_tel, plot_bkg_skycalc
-        # plot_trans_tell_tel(trans_tell=trans_tell, trans_tel=trans_tel)
-
         # Background spectrum [ph/mas2/mn/µm] (from SkyCalc)
-        # plot_bkg_skycalc(filename=instru_dir / "skytable_background.fits")
         data_bkg         = fits.getdata(instru_dir / "skytable_background.fits")
         wave_bkg         = data_bkg["lam"]  * 1e-3             # [nm] => [µm]
         background       = data_bkg["flux"] * 60 * S / 1000**2 # [ph/s/m2/µm/arcsec2] => [ph/mas2/mn/µm]
         background       = Spectrum(wavelength=wave_bkg, flux=background).interpolate_wavelength(wave_output=wave_instru, renorm=False, fill_value=(background[0], background[-1])) # [ph/mas2/mn/µm]
         background.flux *= trans_tel.flux # [ph/mas2/mn/µm] through the telescope
+        
+        # Plotting transmissions and bkg
+        # from fastyield.utils import plot_trans_tell_tel, plot_bkg_skycalc
+        # plot_trans_tell_tel(trans_tell=trans_tell, trans_tel=trans_tel)
+        # plot_bkg_skycalc(filename=instru_dir / "skytable_background.fits")
 
 
 
@@ -707,7 +719,7 @@ def main():
             _CTX         = _IFU_CTX
             func_process = fyh.process_IFU
             shape_SNR    = (N_PT, N_R, N_l0, N_Dl, N_r_WFE, N_IWA, N_TI)
-            tqdm_desc    = f"ELT/{instru} ({instru_type} and {post_processing}) multiprocessing over planets of signal, stellar halo photon noise, DIT length and base for {residuals} noise"
+            tqdm_desc    = f"ELT/{instru} ({instru_type} and {post_processing}) multiprocessing over planets of signal, stellar halo photon noise, DIT length and base for {residuals.lower()} noise"
 
 
         #
@@ -892,6 +904,7 @@ def main():
     dims_last  = [next((idim for idim, name in enumerate(params_names) if key in name), None) for key in ("r_WFE", "IWA")]
     dims_last  = [idim for idim in dims_last if idim is not None]
     plot_order = [idim for idim in range(Ndim) if idim not in dims_last] + dims_last
+
 
 
     if plot_global_results:
@@ -1443,6 +1456,7 @@ def main():
         yield_heatmap_ELT(instru=instru, exposure_time=exposure_time, heatmaps=heatmaps, ptypes_heatmap=panel_keys, bands_plot=bands_plot, config_labels=spec_plot_labels, config_axis_name=spec_axis_name, x_axis_name="Spectral band", panel_labels=panel_labels, title=title, save_dir=sim_dir_concept, filename=f"ELT_{instru}_{instru_type}_{post_processing}_band_spectral_heatmap_grid_{table_type}_{light_regime_plot}_{heatmap_mode}.png")
 
 
+
     if plot_populations:
         #%%
         # POPULATION DIAGNOSTICS
@@ -1561,7 +1575,7 @@ def main():
 
             SNR_plot = np.zeros(N_PT, dtype=float)
             for ip in tqdm(range(N_PT), desc="Marginalizing SNR over parameter grid"):
-                SNR_i        = np.asarray(SNR_planets[ip], dtype=float).squeeze()
+                SNR_i = np.asarray(SNR_planets[ip], dtype=float).squeeze()
                 if instru_type == "IFU":
                     mask_shape = (valid_windows_reduced.shape + (1,) * (SNR_i.ndim - valid_windows_reduced.ndim))
                     SNR_i      = np.where(valid_windows_reduced.reshape(mask_shape), SNR_i, np.nan)
@@ -1603,11 +1617,11 @@ def main():
                     quantity   = np.where(valid_windows_reduced.reshape(mask_shape), quantity, np.nan)
                 return float(fyh.reduce_hcube(hcube=quantity, dims_to_keep=[], params=params_raw, params_ranges=params_ranges_raw, params_priors=params_priors_raw, params_names=params_names_raw, verbose=False))
 
-            var_halo = np.zeros(N_PT, dtype=float)
-            var_bkg  = np.zeros(N_PT, dtype=float)
-            var_RON  = np.zeros(N_PT, dtype=float)
-            var_DC   = np.zeros(N_PT, dtype=float)
-            var_syst = np.zeros(N_PT, dtype=float)
+            var_halo          = np.zeros(N_PT, dtype=float)
+            var_bkg           = np.zeros(N_PT, dtype=float)
+            var_RON           = np.zeros(N_PT, dtype=float)
+            var_DC            = np.zeros(N_PT, dtype=float)
+            var_syst          = np.zeros(N_PT, dtype=float)
             N_DIT_marg        = np.zeros(N_PT, dtype=float)
             signal_total_marg = np.zeros(N_PT, dtype=float)
 
@@ -1665,22 +1679,7 @@ def main():
 
             if instru_type == "IFU" and post_processing == "MM":
                 path = archive_path if table_type == "Archive" else simulated_path
-                fyh.save_marginalized_planet_table(
-                    planet_table=planet_table,
-                    signal=signal_INSTRU,
-                    sigma_fund=sigma_fund_INSTRU,
-                    sigma_syst=sigma_syst_INSTRU,
-                    DIT=DIT_INSTRU,
-                    SNR=SNR_plot,
-                    exposure_time=exposure_time,
-                    table=table_type,
-                    instru=instru,
-                    apodizer=apodizer,
-                    strehl=strehl,
-                    coronagraph=coronagraph,
-                    name_model=name_model,
-                    path=path,
-                )
+                fyh.save_marginalized_planet_table(planet_table=planet_table, signal=signal_INSTRU, sigma_fund=sigma_fund_INSTRU, sigma_syst=sigma_syst_INSTRU, DIT=DIT_INSTRU, SNR=SNR_plot, exposure_time=exposure_time, table=table_type, instru=instru, apodizer=apodizer, strehl=strehl, coronagraph=coronagraph, name_model=name_model, path=path)
 
         else:
             raise ValueError("snr_population_mode must be 'max', 'marginalized' or 'personalized'.")
@@ -1690,7 +1689,7 @@ def main():
         dominant_noise              = np.full(N_PT, "Unknown", dtype=object)
         dominant_noise[valid_noise] = noise_labels[np.nanargmax(noise_stack[:, valid_noise], axis=0)]
 
-        yield_population_plot(table=table_type, instru=instru, instru_type=instru_type, post_processing=post_processing, thermal_model=thermal_model, reflected_model=reflected_model, exposure_time=exposure_time, band_contrast_plot=band_plot, band_plot=band_plot, planet_table=planet_table, SNR_plot=SNR_plot, dominant_noise=dominant_noise, SNR_thr=SNR_thr, save_dir=sim_dir_concept, DL_mas=np.nan, show_golden_sample=show_golden_sample, show_det_regions=show_det_regions, show_ptype_regions=show_ptype_regions, space=planet_population_space)
+        yield_population_plot(table=table_type, instru=instru, instru_type=instru_type, post_processing=post_processing, thermal_model=thermal_model, reflected_model=reflected_model, exposure_time=exposure_time, band_contrast_plot=band_plot, band_regime_plot=band_plot, planet_table=planet_table, SNR_plot=SNR_plot, dominant_noise=dominant_noise, SNR_thr=SNR_thr, save_dir=sim_dir_concept, DL_mas=np.nan, show_golden_sample=show_golden_sample, show_det_regions=show_det_regions, show_ptype_regions=show_ptype_regions, space=planet_population_space)
 
 
     # %%
