@@ -134,9 +134,13 @@ def main():
     # --- Plots configuration ---
     plot_global_results = False
     plot_populations    = True
+    
+    # Choose which planet population (thermal/reflected) to plot (defined in the 'band_plot').
+    # NB: if thermal_model = "None", light_regime_plot will be forced to be "reflected" (and vice versa)
+    light_regime_plot = "thermal+reflected" # 'thermal", "reflected" or "thermal+reflected"
 
-    # Band used for the contrast shown on the y-axis
-    band_contrast_plot = "I"
+    # Band used for the contrast shown on the y-axis and for the light regime split (thermal/reflected)
+    band_plot = "I"
 
     # Choose in wich space the planet populations are plotted
     # "obs"  : observationnal space (contrast vs. angular separation)
@@ -164,12 +168,12 @@ def main():
 
     # Personalized ranges: scalar = fixed value, [min,max] = marginalized range, None = keep default params_ranges
     R_plot            = 80_000           # [dimensionless]
-    l0_plot           = 0.74            # [µm]
+    l0_plot           = 0.74             # [µm]
     Dl_plot           = 0.24             # [µm]
-    r_WFE_plot        = 1.0 #r_WFE_ref        # [dimensionless]
+    r_WFE_plot        = 1.0              # [dimensionless]
     IWA_plot          = IWA_ref          # [lambda0_band/D]
     trans_instru_plot = 0.25             # [e-/ph]
-    sigma_m_plot      = 0.01  #[0.01, 0.1]              # [%]
+    sigma_m_plot      = 0.01             # [%]
     FoV_plot          = 300              # [mas]
 
     show_golden_sample = False
@@ -339,22 +343,21 @@ def main():
     N_PT               = len(planet_table)
     print(f"\nKeeping {N_PT}/{N_PT_raw} planets between {sep_min:.0f} and {sep_max:.0f} mas in thermal and reflected light")
 
+    # Prints simulation parameters
+    print_simulation_summary(instru=instru, instru_type=instru_type, detector=detector, post_processing=post_processing, D=D, S=S, N_mirror=N_mirror, trans_dust=trans_dust, RON0=RON0, RON_lim=RON_lim, DC0=DC0, saturation_e=saturation_e, min_DIT=min_DIT, max_DIT=max_DIT, coronagraph=coronagraph, apodizer=apodizer, strehl=strehl, thermal_model=thermal_model, reflected_model=reflected_model, SNR_thr=SNR_thr, exposure_time=exposure_time, size_core=size_core, A_FWHM=A_FWHM, Rc=Rc if instru_type == "IFU" else None, filter_type=filter_type if instru_type == "IFU" else None, table_type=table_type, sep_min=sep_min, sep_max=sep_max, N_PT_raw=N_PT_raw, N_PT=N_PT, force_new_calc=force_new_calc, l0=l0, R=R if instru_type == "IFU" else None, Dl=Dl, WFE=r_WFE, IWA=IWA, trans_instru=trans_instru, sigma_m=sigma_m, FoV=FoV)
+
     if N_PT == 0:
         raise ValueError("No planets remain after the separation selection")
     # Fail before costly PSF computations if the input table lacks stellar V photometry.
     vmag_check = np.array([fyh.get_star_vmag(planet) for planet in planet_table], dtype=float)
     outside_vmag = (vmag_check < 0.0) | (vmag_check > 10.0)
     if np.any(outside_vmag):
-        print(f"WARNING: {np.count_nonzero(outside_vmag)} stars are outside the simulated V=[0,10] range; "
-              "PSF magnitude interpolation will clamp to the nearest boundary")
-    print(f"PCS stellar V-band photometry: [{vmag_check.min():.2f}, {vmag_check.max():.2f}] mag")
+        print(f"WARNING: {np.count_nonzero(outside_vmag)} stars are outside the simulated V=[0,10] range; PSF magnitude interpolation will clamp to the nearest boundary")
+    print(f"\nPCS stellar V-band photometry: [{vmag_check.min():.2f}, {vmag_check.max():.2f}] mag")
 
-    # Prints simulation parameters
-    print_simulation_summary(instru=instru, instru_type=instru_type, detector=detector, post_processing=post_processing, D=D, S=S, N_mirror=N_mirror, trans_dust=trans_dust, RON0=RON0, RON_lim=RON_lim, DC0=DC0, saturation_e=saturation_e, min_DIT=min_DIT, max_DIT=max_DIT, coronagraph=coronagraph, apodizer=apodizer, strehl=strehl, thermal_model=thermal_model, reflected_model=reflected_model, SNR_thr=SNR_thr, exposure_time=exposure_time, size_core=size_core, A_FWHM=A_FWHM, Rc=Rc if instru_type == "IFU" else None, filter_type=filter_type if instru_type == "IFU" else None, table_type=table_type, sep_min=sep_min, sep_max=sep_max, N_PT_raw=N_PT_raw, N_PT=N_PT, force_new_calc=force_new_calc, l0=l0, R=R if instru_type == "IFU" else None, Dl=Dl, WFE=r_WFE, IWA=IWA, trans_instru=trans_instru, sigma_m=sigma_m, FoV=FoV)
     # The shared legacy summary helper calls its argument 'WFE'; it receives r_WFE
     # for API compatibility. Its WFE/IWA unit annotations are NOT authoritative here.
-    print(f"PCS PSF axes (authoritative): r_WFE={r_WFE} [dimensionless]; "
-          f"IWA={IWA} [lambda0_band/D]; mag_star=stellar V-band magnitude")
+    print(f"\nPCS PSF axes (authoritative): r_WFE={r_WFE} [dimensionless]; IWA={IWA} [lambda0_band/D]; mag_star=stellar V-band magnitude")
 
     # Build meta for YOUR case (IFU or imager)
     meta = dict(code_version=PCS_CODE_VERSION, dtype=str(dtype),
@@ -429,9 +432,9 @@ def main():
     ####################################
     else:
         if force_new_calc:
-            print(f"\nNew FastYield ELT/{instru} calculations (forcing_new_calc=True).")
+            print(f"\nNew FastYield ELT/{instru} calculations (forcing_new_calc=True).\n")
         else:
-            print(f"\nNew FastYield ELT/{instru} calculations (missing files).")
+            print(f"\nNew FastYield ELT/{instru} calculations (missing files).\n")
 
         #
         # PSF data (PSF profile, fraction core and coronagraph transmission) preparations (l0, r_WFE, IWA, mag_star, sep)
@@ -810,8 +813,6 @@ def main():
     lw                 = 2                   # Linewidth
     alpha              = 0.9                 # Opacity
     gain               = True                # True for probability gain (normalized yield), False for absolute yields
-    light_regime_plot  = "thermal+reflected" # 'thermal", "reflected" or "thermal+reflected"
-    band_regime_plot   =  "I"                # Band where the thermal/reflected domination regime is splitted
     ptypes             = ["Jupiter",                 "Saturn",                "Neptune",                 "Earth"]
     marker_ptypes      = {"Jupiter": "s",            "Saturn": "v",           "Neptune": "P",            "Earth": "o"}
     label_ptypes       = {"Jupiter": "Jupiter-like", "Saturn": "Saturn-like", "Neptune": "Neptune-like", "Earth": "Earth-like"}
@@ -820,7 +821,6 @@ def main():
     if instru_type == "IFU":
         params         = [R,                           l0,                                                Dl,                                           r_WFE,                                 IWA,                                                       trans_instru,                                    100*sigma_m,                                        FoV]                     # params axis
         params_ranges  = [(R.min(), R.max()),          (l0.min(), l0.max()),                              (Dl.min(), Dl.max()),                         (r_WFE_ref, r_WFE_ref),                (IWA_ref, IWA_ref),                                        (trans_instru.min(), trans_instru.max()),        ((100*sigma_m).min(), (100*sigma_m).min()),         (FoV.max(), FoV.max())]  # params ranges for marginalization
-        #params_ranges  = [(R.min(), R.max()),          (l0.min(), l0.max()),                              (Dl.max(), Dl.max()),                         (r_WFE_ref, r_WFE_ref),                (IWA_ref, IWA_ref),                                        (trans_instru.max(), trans_instru.max()),        ((100*sigma_m).min(), (100*sigma_m).min()),         (FoV.max(), FoV.max())] # params ranges for marginalization
         params_priors  = ["log-uniform",               "uniform",                                         "uniform",                                    "uniform",                             "log-uniform",                                             "uniform",                                       "log-uniform",                                      "log-uniform"]           # params priors for marginalization
         params_islog   = [True,                        False,                                             False,                                        False,                                 True,                                                      False,                                           True,                                               True]                    # params space (linspace or logspace)
         params_isint   = [True,                        False,                                             False,                                        False,                                 False,                                                     False,                                           False,                                              True]                    # params rounded format
@@ -899,8 +899,8 @@ def main():
         # Thermal/Reflected regime split of the planet table
         # Considering both thermal and reflected contribution
         if thermal_model != "None" and reflected_model != "None":
-            mag_th   = np.asarray(planet_table[f"Planet{band_regime_plot}mag(thermal)"],   dtype=float)
-            mag_re   = np.asarray(planet_table[f"Planet{band_regime_plot}mag(reflected)"], dtype=float)
+            mag_th   = np.asarray(planet_table[f"Planet{band_plot}mag(thermal)"],   dtype=float)
+            mag_re   = np.asarray(planet_table[f"Planet{band_plot}mag(reflected)"], dtype=float)
             valid_th = np.isfinite(mag_th)
             valid_re = np.isfinite(mag_re)
             # Lower magnitude = brighter contribution.
@@ -919,7 +919,7 @@ def main():
         else:
             raise ValueError("At least one of thermal_model or reflected_model must be different from 'None'.")
         mask_unknown   = ~(mask_thermal | mask_reflected)
-        print(f"\nPlanet-light regime split in {band_regime_plot}-band:")
+        print(f"\nPlanet-light regime split in {band_plot}-band:")
         print(f"                  => Thermal-dominated:   {mask_thermal.sum()}/{len(planet_table)}")
         print(f"                  => Reflected-dominated: {mask_reflected.sum()}/{len(planet_table)}")
         print(f"                  => Unknown regime:      {mask_unknown.sum()}/{len(planet_table)}")
@@ -1612,7 +1612,7 @@ def main():
             signal_total_marg = np.zeros(N_PT, dtype=float)
 
             for ip in tqdm(range(N_PT), desc="Marginalizing dominant-noise terms"):
-                signal_i        = np.nan_to_num(np.asarray(signal_planets[ip], dtype=float).squeeze(), nan=0.0, posinf=0.0, neginf=0.0)
+                signal_i       = np.nan_to_num(np.asarray(signal_planets[ip], dtype=float).squeeze(), nan=0.0, posinf=0.0, neginf=0.0)
                 sigma_halo_2_i = np.nan_to_num(np.asarray(sigma_halo_2_planets[ip], dtype=float).squeeze(), nan=0.0, posinf=0.0, neginf=0.0)
                 sigma_bkg_2_i  = np.nan_to_num(np.asarray(sigma_bkg_2_planets[ip], dtype=float).squeeze(), nan=0.0, posinf=0.0, neginf=0.0)
                 DIT_i          = np.asarray(DIT_planets[ip], dtype=float).squeeze()
@@ -1642,12 +1642,12 @@ def main():
                 else:
                     raise ValueError("instru_type must be 'IFU' or 'imager'.")
 
-                var_halo[ip]         = marginalize_raw(N_DIT_i * sigma_halo_2_i)
-                var_bkg[ip]          = marginalize_raw(N_DIT_i * sigma_bkg_2_i)
-                var_RON[ip]          = marginalize_raw(N_DIT_i * sigma_RON_2_i)
-                var_DC[ip]           = marginalize_raw(N_DIT_i * sigma_DC_2_i)
-                var_syst[ip]         = marginalize_raw(N_DIT_i**2 * mean_sigma_m_2 * sigma_syst_base_2_i)
-                N_DIT_marg[ip]       = marginalize_raw(N_DIT_i)
+                var_halo[ip]          = marginalize_raw(N_DIT_i * sigma_halo_2_i)
+                var_bkg[ip]           = marginalize_raw(N_DIT_i * sigma_bkg_2_i)
+                var_RON[ip]           = marginalize_raw(N_DIT_i * sigma_RON_2_i)
+                var_DC[ip]            = marginalize_raw(N_DIT_i * sigma_DC_2_i)
+                var_syst[ip]          = marginalize_raw(N_DIT_i**2 * mean_sigma_m_2 * sigma_syst_base_2_i)
+                N_DIT_marg[ip]        = marginalize_raw(N_DIT_i)
                 signal_total_marg[ip] = marginalize_raw(N_DIT_i * signal_i)
 
             signal_INSTRU     = np.full(N_PT, np.nan, dtype=float)
@@ -1690,7 +1690,7 @@ def main():
         dominant_noise              = np.full(N_PT, "Unknown", dtype=object)
         dominant_noise[valid_noise] = noise_labels[np.nanargmax(noise_stack[:, valid_noise], axis=0)]
 
-        yield_population_plot(table=table_type, instru=instru, instru_type=instru_type, post_processing=post_processing, thermal_model=thermal_model, reflected_model=reflected_model, exposure_time=exposure_time, band_contrast_plot=band_contrast_plot, band_regime_plot=band_regime_plot, planet_table=planet_table, SNR_plot=SNR_plot, dominant_noise=dominant_noise, SNR_thr=SNR_thr, save_dir=sim_dir_concept, DL_mas=np.nan, show_golden_sample=show_golden_sample, show_det_regions=show_det_regions, show_ptype_regions=show_ptype_regions, space=planet_population_space)
+        yield_population_plot(table=table_type, instru=instru, instru_type=instru_type, post_processing=post_processing, thermal_model=thermal_model, reflected_model=reflected_model, exposure_time=exposure_time, band_contrast_plot=band_plot, band_plot=band_plot, planet_table=planet_table, SNR_plot=SNR_plot, dominant_noise=dominant_noise, SNR_thr=SNR_thr, save_dir=sim_dir_concept, DL_mas=np.nan, show_golden_sample=show_golden_sample, show_det_regions=show_det_regions, show_ptype_regions=show_ptype_regions, space=planet_population_space)
 
 
     # %%
@@ -1714,7 +1714,6 @@ def main():
 
 if __name__ == "__main__":
     __spec__ = None
-
     if sys.platform.startswith("win"):
         mp.freeze_support() # for Windows
     _out = main()
