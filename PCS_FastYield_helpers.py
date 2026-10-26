@@ -37,27 +37,38 @@ chunksize = 8
 # and the Spectra/ directory.
 # set_sim_data_path("/path/to/sim_data")
 
-# PCS SUMMARY PSF products are indexed by a single stellar V magnitude.
-# Never derive their magnitude coordinate independently at each wavelength.
-def get_star_vmag(planet):
-    """Read the observed stellar Vega-system V magnitude from the planet table."""
+
+def get_star_mag(planet, band):
+    """
+    Return the stellar magnitude in the requested photometric band.
+    Used to select/interpolate PCS AO/PSF performance.
+    """
     colnames = getattr(planet, "colnames", None)
     if colnames is None and getattr(planet, "table", None) is not None:
         colnames = planet.table.colnames
     if colnames is None:
         colnames = getattr(getattr(planet, "dtype", None), "names", ()) or ()
+    band = str(band).strip()
+    if band not in ("V", "z"):
+        raise ValueError(f"Unsupported WFS band: {band!r}")
     normalized = {str(name).lower().replace("_", "").replace(" ", ""): name for name in colnames}
-    for candidate in ("StarVmag", "StarVmag(Vega)", "Vmag", "st_vmag", "sy_vmag"):
+    candidates = (f"Star{band}mag",)
+    for candidate in candidates:
         key = candidate.lower().replace("_", "").replace(" ", "")
-        if key in normalized:
-            value = planet[normalized[key]]
-            if getattr(value, "mask", False) is not False and bool(np.any(value.mask)):
-                break
+        if key not in normalized:
+            continue
+        value = planet[normalized[key]]
+        if np.any(np.ma.getmaskarray(value)):
+            continue
+        try:
             value = float(value)
-            if np.isfinite(value):
-                return value
-            break
-    raise ValueError(f"Missing valid stellar V magnitude for planet row. Columns: {list(colnames)}. PCS MAGxxx is defined in V; a wavelength-dependent pseudo-magnitude is not valid.")
+        except (TypeError, ValueError):
+            continue
+        if np.isfinite(value):
+            return value
+    raise ValueError(
+        f"Missing valid stellar {band}-band magnitude. Available columns: {list(colnames)}")
+
 
 
 # -------------------------------------------------------------
@@ -311,6 +322,7 @@ def process_IFU(idx):
     wave_K                 = _IFU_CTX["wave_K"]
     counts_vega_K          = _IFU_CTX["counts_vega_K"]
     mag_star               = _IFU_CTX["mag_star"]
+    band_WFS               = _IFU_CTX["band_WFS"]
     scale_spectrum         = _IFU_CTX["scale_spectrum"]
     N_R                    = _IFU_CTX["N_R"]
     N_l0                   = _IFU_CTX["N_l0"]
@@ -336,11 +348,13 @@ def process_IFU(idx):
     D                      = _IFU_CTX["D"]
     pxscales_rad           = _IFU_CTX["pxscales_rad"]
 
+
     # --- Planet row ---
     planet                    = planet_table[idx]
     separation_planet         = float(planet["AngSep"].value)           # [mas]
     separation_planet_rad     = separation_planet / (rad2arcsec * 1000) # [rad]
     separation_planet_rad_arr = np.array([separation_planet_rad], dtype=dtype)
+
 
     # --- Computing the planet and star models for this planet row in [J/s/m²/µm] ---
     planet_spectrum, _, _, star_spectrum = get_thermal_reflected_spectrum(planet=planet, thermal_model=thermal_model, reflected_model=reflected_model, instru=None, wave_model=wave_model, wave_K=wave_K, counts_vega_K=counts_vega_K, show=False, in_planet_mag=True, interpolated_spectrum=True, apply_kinematics=True)
@@ -349,8 +363,8 @@ def process_IFU(idx):
     planet_spectrum = planet_spectrum.interpolate_wavelength(wave_instru, renorm=False) # [J/s/m2/µm]
 
 
-    # PCS MAGxxx is a *single V-band magnitude*, independent of wavelength.
-    mag_star_V = get_star_vmag(planet)
+    # PCS MAGxxx is a *single 'mag_WFS'-band magnitude*, independent of wavelength.
+    mag_star_WFS = get_star_mag(planet, band_WFS)
 
 
     # --- PSF data linearly interpolated at the planet's separation and stellar magnitude ---
@@ -364,9 +378,9 @@ def process_IFU(idx):
     fraction_core_mag_4D = interp_flat_last_axis(separation, fraction_core_5D, separation_planet, dtype=dtype) # (l0, r_WFE, IWA, mag_star)
 
     # Interpolate on the fixed stellar V magnitude at every wavelength.
-    PSF_profile_sep_3D   = interp_mag_flat_4d(mag_star, PSF_profile_mag_4D,   mag_star_V, dtype=dtype)
-    fraction_core_sep_3D = interp_mag_flat_4d(mag_star, fraction_core_mag_4D, mag_star_V, dtype=dtype)
-    PSF_profile_max_3D   = interp_mag_flat_4d(mag_star, PSF_profile_max_4D,   mag_star_V, dtype=dtype)
+    PSF_profile_sep_3D   = interp_mag_flat_4d(mag_star, PSF_profile_mag_4D,   mag_star_WFS, dtype=dtype)
+    fraction_core_sep_3D = interp_mag_flat_4d(mag_star, fraction_core_mag_4D, mag_star_WFS, dtype=dtype)
+    PSF_profile_max_3D   = interp_mag_flat_4d(mag_star, PSF_profile_max_4D,   mag_star_WFS, dtype=dtype)
 
 
     # --- Converting in [ph/mn/µm] ---
@@ -530,16 +544,17 @@ def process_IFU(idx):
         sigma_bkg_2_3D[i, invalid]       = np.nan
         sigma_syst_base_2_3D[i, invalid] = np.nan
 
+
     # --- Computing DIT length in [mn/DIT] (R, l0, Dl, r_WFE, IWA, TI) ---
 
     # max_star_flux in [ph/px/mn/bin] in the brightest pixel and bin (through coronagraph, if any):
     # [total star ph/mn/bin] in the brightest bin * [star flux fraction/px] in the brightest pixel => [ph/px/mn/bin] in the brightest pixel and bin
-    # (R, l0, Dl, 1, 1)                           * (1, l0, 1, r_WFE, IWA)                           => (R, l0, Dl, r_WFE, IWA)
+    # (R, l0, Dl, 1, 1)                           * (1, l0, 1, r_WFE, IWA)                         => (R, l0, Dl, r_WFE, IWA)
     max_star_flux_5D = max_star_flux_3D[:, :, :, None, None] * PSF_profile_max_3D[None, :, None, :, :]
 
     # max_star_flux in [e-/px/mn/bin] in the brightest pixel with instrumental transmission (through coronagraph, if any):
     # [ph/px/mn/bin] in the brightest pixel and bin * [e-/ph]             => [e-/px/mn/bin] in the brightest pixel and bin
-    # (R, l0, Dl, r_WFE, IWA, 1)                      * (1, 1, 1, 1, 1, TI) => (R, l0, Dl, r_WFE, IWA, TI)
+    # (R, l0, Dl, r_WFE, IWA, 1)                    * (1, 1, 1, 1, 1, TI) => (R, l0, Dl, r_WFE, IWA, TI)
     max_star_flux_6D = max_star_flux_5D[:, :, :, :, :, None] * trans_instru[None, None, None, None, None, :]
 
     # Computing DIT length in [mn/DIT] (+ clipping between min and max DIT)
@@ -555,11 +570,11 @@ def process_IFU(idx):
 
     # Signal at the planet's separation inside the FWHM in [ph/FWHM/mn] (throught coronagraph, if any)
     # [total planet ph/mn] * [planet flux fraction/FWHM] => [ph/FWHM/mn]
-    # (R, l0, Dl, 1, 1)    * (1, l0, 1, r_WFE, IWA)        => (R, l0, Dl, r_WFE, IWA)
+    # (R, l0, Dl, 1, 1)    * (1, l0, 1, r_WFE, IWA)      => (R, l0, Dl, r_WFE, IWA)
     signal_5D = signal_3D[:, :, :, None, None] * fraction_core_sep_3D[None, :, None, :, :]
 
     # Signal at the planet's separation inside the FWHM in [e-/FWHM/mn] with instrumental transmission (throught coronagraph, if any)
-    # [ph/FWHM/mn]             * [e-/ph]             => [e-/FWHM/mn]
+    # [ph/FWHM/mn]               * [e-/ph]             => [e-/FWHM/mn]
     # (R, l0, Dl, r_WFE, IWA, 1) * (1, 1, 1, 1, 1, TI) => (R, l0, Dl, r_WFE, IWA, TI)
     signal_6D = signal_5D[:, :, :, :, :, None] * trans_instru[None, None, None, None, None, :]
 
@@ -573,16 +588,16 @@ def process_IFU(idx):
 
     # Stellar halo photon noise variance (Poisson) at the planet's separation in [ph/px/mn] (throught coronagraph, if any)
     # [total star ph/mn] * [star flux fraction/px] => [ph/px/mn]
-    # (R, l0, Dl, 1, 1)  * (1, l0, 1, r_WFE, IWA)    => (R, l0, Dl, r_WFE, IWA)
+    # (R, l0, Dl, 1, 1)  * (1, l0, 1, r_WFE, IWA)  => (R, l0, Dl, r_WFE, IWA)
     sigma_halo_2_5D = sigma_halo_2_3D[:, :, :, None, None] * PSF_profile_sep_3D[None, :, None, :, :]
 
     # Stellar halo photon noise variance (Poisson) at the planet's separation in [e-/px/mn] with instrumental transmission (throught coronagraph, if any)
-    # [ph/px/mn]               * [e-/ph]             => [e-/px/mn]
+    # [ph/px/mn]                 * [e-/ph]             => [e-/px/mn]
     # (R, l0, Dl, r_WFE, IWA, 1) * (1, 1, 1, 1, 1, TI) => (R, l0, Dl, r_WFE, IWA, TI)
     sigma_halo_2_6D = sigma_halo_2_5D[:, :, :, :, :, None] * trans_instru[None, None, None, None, None, :]
 
     # Stellar halo photon noise variance (Poisson) at the planet's separation in [e-/FWHM/DIT] with instrumental transmission integrated over the DIT and the FWHM (quadrature addition assuming statistical independance) (throught coronagraph, if any)
-    # [e-/px/mn]                * [px/FWHM]*[mn/DIT]        => [e-/FWHM/DIT]
+    # [e-/px/mn]                  * [px/FWHM]*[mn/DIT]          => [e-/FWHM/DIT]
     # (R, l0, Dl, r_WFE, IWA, TI) * (R, l0, Dl, r_WFE, IWA, TI) => (R, l0, Dl, r_WFE, IWA, TI)
     sigma_halo_2_6D = sigma_halo_2_6D * A_FWHM*DIT_6D
 
@@ -591,16 +606,16 @@ def process_IFU(idx):
 
     # Stellar halo systematic noise variance at the planet's separation in [ph/px/mn]**2 (throught coronagraph, if any)
     # [total star ph/mn]**2 * [star flux fraction/px]**2 => [ph/px/mn]**2
-    # (R, l0, Dl, 1, 1)     * (1, l0, 1, r_WFE, IWA)       => (R, l0, Dl, r_WFE, IWA)
+    # (R, l0, Dl, 1, 1)     * (1, l0, 1, r_WFE, IWA)     => (R, l0, Dl, r_WFE, IWA)
     sigma_syst_base_2_5D = sigma_syst_base_2_3D[:, :, :, None, None] * PSF_profile_sep_3D[None, :, None, :, :]**2
 
     # Stellar halo systematic noise variance at the planet's separation in [e-/px/mn]**2 with instrumental transmission (throught coronagraph, if any)
-    # [ph/px/mn]**2            * [e-/ph]**2          => [e-/px/mn]**2
+    # [ph/px/mn]**2              * [e-/ph]**2          => [e-/px/mn]**2
     # (R, l0, Dl, r_WFE, IWA, 1) * (1, 1, 1, 1, 1, TI) => (R, l0, Dl, r_WFE, IWA, TI)
     sigma_syst_base_2_6D = sigma_syst_base_2_5D[:, :, :, :, :, None] * trans_instru[None, None, None, None, None, :]**2
 
     # Stellar halo systematic noise variance at the planet's separation in [e-/px/mn]**2 with instrumental transmission integrated over the DIT and the FWHM (throught coronagraph, if any) (we take A_FWHM**2 * DIT**2 since sigma_syst_base_2 propto H_integrated**2 propto A_FWHM**2*DIT**2, where H_integrated = the halo integrated over FWHM boxes and the DIT)
-    # [e-/px/mn]**2             * [px/FWHM]**2*[mn/DIT]**2  => [e-/FWHM/DIT]**2
+    # [e-/px/mn]**2               * [px/FWHM]**2*[mn/DIT]**2  => [e-/FWHM/DIT]**2
     # (R, l0, Dl, r_WFE, IWA, TI) * (R, l0, Dl, r_WFE, IWA, TI) => (R, l0, Dl, r_WFE, IWA, TI)
     sigma_syst_base_2_6D = sigma_syst_base_2_6D * A_FWHM**2*DIT_6D**2
 
@@ -613,7 +628,7 @@ def process_IFU(idx):
     sigma_bkg_2_4D = sigma_bkg_2_3D[:, :, :, None] * trans_instru[None, None, None, :]
 
     # Background photon noise variance (Poisson) in [e-/FWHM/DIT] with instrumental transmission integrated over the DIT and the FWHM (quadrature addition assuming statistical independance)
-    # [e-/px/mn]            * [px/FWHM]*[mn/DIT]        => [e-/FWHM/DIT]
+    # [e-/px/mn]            * [px/FWHM]*[mn/DIT]          => [e-/FWHM/DIT]
     # (R, l0, Dl, 1, 1, TI) * (R, l0, Dl, r_WFE, IWA, TI) => (R, l0, Dl, r_WFE, IWA, TI)
     sigma_bkg_2_6D = sigma_bkg_2_4D[:, :, :, None, None, :] * A_FWHM*DIT_6D
 
@@ -624,6 +639,7 @@ def process_IFU(idx):
     _IFU_CTX["sigma_bkg_2_out"][idx]       = sigma_bkg_2_6D.astype(dtype,       copy=False) # [e-/FWHM/DIT]**2
     _IFU_CTX["DIT_out"][idx]               = DIT_6D.astype(dtype,               copy=False) # [mn/DIT]
     _IFU_CTX["sigma_syst_base_2_out"][idx] = sigma_syst_base_2_6D.astype(dtype, copy=False) # [e-/FWHM/DIT]**2 (at sigma_m = 1)
+    
     return idx
 
 
@@ -641,6 +657,7 @@ def process_IM(idx):
     wave_K             = _IM_CTX["wave_K"]
     counts_vega_K      = _IM_CTX["counts_vega_K"]
     mag_star           = _IM_CTX["mag_star"]
+    band_WFS           = _IM_CTX["band_WFS"]
     scale_spectrum     = _IM_CTX["scale_spectrum"]
     trans_instru       = _IM_CTX["trans_instru"]
     trans_tell_tel     = _IM_CTX["trans_tell_tel"]
@@ -664,8 +681,8 @@ def process_IM(idx):
     planet_spectrum, _, _, star_spectrum = get_thermal_reflected_spectrum(planet=planet, thermal_model=thermal_model, reflected_model=reflected_model, instru=None, wave_model=wave_instru, wave_K=wave_K, counts_vega_K=counts_vega_K, show=False, in_planet_mag=True, interpolated_spectrum=True, apply_kinematics=False)
 
 
-    # PCS AO performance is indexed by the same stellar V magnitude at all l0.
-    mag_star_V = get_star_vmag(planet)
+    # PCS MAGxxx is a *single 'mag_WFS'-band magnitude*, independent of wavelength.
+    mag_star_WFS = get_star_mag(planet, band_WFS)
 
 
     # --- PSF data linearly interpolated at the planet's separation and stellar magnitude ---
@@ -679,9 +696,9 @@ def process_IM(idx):
     fraction_core_mag_4D = interp_flat_last_axis(separation, fraction_core_5D, separation_planet, dtype=dtype) # (l0, r_WFE, IWA, mag_star)
 
     # Interpolate on the fixed stellar V magnitude at every wavelength.
-    PSF_profile_sep_3D   = interp_mag_flat_4d(mag_star, PSF_profile_mag_4D,   mag_star_V, dtype=dtype)
-    fraction_core_sep_3D = interp_mag_flat_4d(mag_star, fraction_core_mag_4D, mag_star_V, dtype=dtype)
-    PSF_profile_max_3D   = interp_mag_flat_4d(mag_star, PSF_profile_max_4D,   mag_star_V, dtype=dtype)
+    PSF_profile_sep_3D   = interp_mag_flat_4d(mag_star, PSF_profile_mag_4D,   mag_star_WFS, dtype=dtype)
+    fraction_core_sep_3D = interp_mag_flat_4d(mag_star, fraction_core_mag_4D, mag_star_WFS, dtype=dtype)
+    PSF_profile_max_3D   = interp_mag_flat_4d(mag_star, PSF_profile_max_4D,   mag_star_WFS, dtype=dtype)
 
 
     # --- Converting in [ph/mn/bin] ---
@@ -694,6 +711,7 @@ def process_IM(idx):
     signal_2D      = window_sums_1d(trans_tell_tel * planet, idx_lo, idx_hi).astype(dtype) # = sum ( trans * S_planet ) (l0, Dl) [ph/mn]
     star_flux_2D   = window_sums_1d(trans_tell_tel * star,   idx_lo, idx_hi).astype(dtype) # = sum ( trans * S_star )   (l0, Dl) [ph/mn]
 
+
     # --- Computing DIT length in [mn/DIT] (l0, Dl, r_WFE, IWA, TI) ---
 
     # max_star_flux in [ph/px/mn] in the brightest pixel (through coronagraph, if any):
@@ -703,7 +721,7 @@ def process_IM(idx):
 
     # max_star_flux in [e-/px/mn] in the brightest pixel with instrumental transmission (through coronagraph, if any):
     # [ph/px/mn] in the brightest pixel * [e-/ph]          => [e-/px/mn] in the brightest pixel
-    # (l0, Dl, r_WFE, IWA, 1)             * (1, 1, 1, 1, TI) => (l0, Dl, r_WFE, IWA, TI)
+    # (l0, Dl, r_WFE, IWA, 1)           * (1, 1, 1, 1, TI) => (l0, Dl, r_WFE, IWA, TI)
     max_star_flux_5D = max_star_flux_4D[:, :, :, :, None] * trans_instru[None, None, None, None, :]
 
     # Computing DIT length in [mn/DIT] (+ clipping between min and max DIT)
@@ -714,20 +732,21 @@ def process_IM(idx):
     DIT_5D          = np.maximum(DIT_5D, min_DIT_5D)     # (l0, Dl, r_WFE, IWA, TI) [mn/DIT]
     DIT_5D          = np.minimum(DIT_5D, max_DIT_5D)     # (l0, Dl, r_WFE, IWA, TI) [mn/DIT]
 
+
     # --- Computing signal in [e-/FWHM/DIT] (l0, Dl, r_WFE, IWA, TI) ---
 
     # Signal at the planet's separation inside the FWHM in [ph/FWHM/mn] (throught coronagraph, if any)
     # [total planet ph/mn] * [planet flux fraction/FWHM] => [ph/FWHM/mn]
-    # (l0, Dl, 1, 1)       * (l0, 1, r_WFE, IWA)           => (l0, Dl, r_WFE, IWA)
+    # (l0, Dl, 1, 1)       * (l0, 1, r_WFE, IWA)         => (l0, Dl, r_WFE, IWA)
     signal_4D = signal_2D[:, :, None, None] * fraction_core_sep_3D[:, None, :, :]
 
     # Signal at the planet's separation inside the FWHM in [e-/FWHM/mn] with instrumental transmission (throught coronagraph, if any)
-    # [ph/FWHM/mn]          * [e-/ph]          => [e-/FWHM/mn]
+    # [ph/FWHM/mn]            * [e-/ph]          => [e-/FWHM/mn]
     # (l0, Dl, r_WFE, IWA, 1) * (1, 1, 1, 1, TI) => (l0, Dl, r_WFE, IWA, TI)
     signal_5D = signal_4D[:, :, :, :, None] * trans_instru[None, None, None, None, :]
 
     # Signal at the planet's separation inside the FWHM in [e-/FWHM/DIT] with instrumental transmission integrated over the DIT(throught coronagraph, if any)
-    # [e-/FWHM/mn]           * [mn/DIT]               => [e-/FWHM/DIT]
+    # [e-/FWHM/mn]             * [mn/DIT]                 => [e-/FWHM/DIT]
     # (l0, Dl, r_WFE, IWA, TI) * (l0, Dl, r_WFE, IWA, TI) => (l0, Dl, r_WFE, IWA, TI)
     signal_5D = signal_5D * DIT_5D
 
@@ -736,16 +755,16 @@ def process_IM(idx):
 
     # Stellar halo photon noise variance (Poisson) at the planet's separation in [ph/px/mn] (throught coronagraph, if any)
     # [total star ph/mn] * [star flux fraction/px] => [ph/px/mn]
-    # (l0, Dl, 1, 1)     * (l0, 1, r_WFE, IWA)       => (l0, Dl, r_WFE, IWA)
+    # (l0, Dl, 1, 1)     * (l0, 1, r_WFE, IWA)     => (l0, Dl, r_WFE, IWA)
     sigma_halo_2_4D = star_flux_2D[:, :, None, None] * PSF_profile_sep_3D[:, None, :, :]
 
     # Stellar halo photon noise variance (Poisson) at the planet's separation in [e-/px/mn] with instrumental transmission (throught coronagraph, if any)
-    # [ph/px/mn]            * [e-/ph]          => [e-/px/mn]
+    # [ph/px/mn]              * [e-/ph]          => [e-/px/mn]
     # (l0, Dl, r_WFE, IWA, 1) * (1, 1, 1, 1, TI) => (l0, Dl, r_WFE, IWA, TI)
     sigma_halo_2_5D = sigma_halo_2_4D[:, :, :, :, None] * trans_instru[None, None, None, None, :]
 
     # Stellar halo photon noise variance (Poisson) at the planet's separation in [e-/FWHM/DIT] with instrumental transmission integrated over the DIT and the FWHM (quadrature addition assuming statistical independance) (throught coronagraph, if any)
-    # [e-/px/mn]             * [px/FWHM]*[mn/DIT]     => [e-/FWHM/DIT]
+    # [e-/px/mn]               * [px/FWHM]*[mn/DIT]       => [e-/FWHM/DIT]
     # (l0, Dl, r_WFE, IWA, TI) * (l0, Dl, r_WFE, IWA, TI) => (l0, Dl, r_WFE, IWA, TI)
     sigma_halo_2_5D = sigma_halo_2_5D * A_FWHM*DIT_5D
 
@@ -758,7 +777,7 @@ def process_IM(idx):
     sigma_bkg_2_3D = background_flux_2D[:, :, None] * trans_instru[None, None, :]
 
     # Background photon noise variance (Poisson) in [e-/FWHM/DIT] with instrumental transmission integrated over the DIT and the FWHM (quadrature addition assuming statistical independance)
-    # [e-/px/mn]         * [px/FWHM]*[mn/DIT]     => [e-/FWHM/DIT]
+    # [e-/px/mn]         * [px/FWHM]*[mn/DIT]       => [e-/FWHM/DIT]
     # (l0, Dl, 1, 1, TI) * (l0, Dl, r_WFE, IWA, TI) => (l0, Dl, r_WFE, IWA, TI)
     sigma_bkg_2_5D = sigma_bkg_2_3D[:, :, None, None, :] * A_FWHM*DIT_5D
 
@@ -768,6 +787,7 @@ def process_IM(idx):
     _IM_CTX["sigma_halo_2_out"][idx] = sigma_halo_2_5D.astype(dtype, copy=False) # [e-/FWHM/DIT]**2
     _IM_CTX["sigma_bkg_2_out"][idx]  = sigma_bkg_2_5D.astype(dtype,  copy=False) # [e-/FWHM/DIT]**2
     _IM_CTX["DIT_out"][idx]          = DIT_5D.astype(dtype,          copy=False) # [mn/DIT]
+    
     return idx
 
 
