@@ -12,7 +12,7 @@ os.environ["NUMBA_NUM_THREADS"]    = "1"
 from fastyield.config import rad2arcsec, h, c, R0_min, R0_max, lmin_bands, lmax_bands, archive_path, simulated_path, get_sim_data_path, dpi_fig
 from fastyield.get_specs import load_tell_trans, get_detector_specs
 from fastyield.FastYield import load_planet_table, get_mask_planet_type, yield_population_plot, yield_heatmap_ELT
-from fastyield.FastYield_helpers import print_simulation_summary, make_suffix, write_meta, memmap_nbytes, format_nbytes, create_memmap_with_log
+from fastyield.FastYield_helpers import print_simulation_summary, make_suffix, write_meta, memmap_nbytes, format_nbytes, create_memmap_with_log, convert_Pdet_to_plot_quantity, get_panel_ymax, set_log_decade_ticks, format_range, print_range
 from fastyield.spectrum import get_wavelength_axis_constant_R, Spectrum, load_vega_spectrum, get_spectrum_contribution_name_model, get_wave_K, get_counts_from_density
 
 # import astropy modules
@@ -23,7 +23,7 @@ import numpy as np
 
 # import matplotlib modules
 import matplotlib.pyplot as plt
-from matplotlib.ticker import LogLocator, NullFormatter, AutoMinorLocator, FixedLocator, FuncFormatter, NullLocator
+from matplotlib.ticker import LogLocator, NullFormatter, AutoMinorLocator
 from matplotlib.lines import Line2D
 import matplotlib as mpl
 
@@ -91,8 +91,8 @@ def main():
     # --- Instrument concept ---
     # One YAML file per concept in instrument_concepts/ (ifu_global, imager_global, concept_A_highres_vis_ifu, ...)
     concept_name       = "concept_A_highres_vis_ifu_band=VRIz"
-    # concept_name       = "concept_Ab_highres_nir_ifu_band=zYJ"
-    # concept_name       = "ifu_global"
+    #concept_name       = "concept_Ab_highres_nir_ifu_band=zYJ"
+    #concept_name       = "ifu_global"
     instrument_concept = fyh.load_instrument_concept(concept_name)
 
     # --- General parameters for the simulation ---
@@ -135,7 +135,7 @@ def main():
     # --- Plots configuration ---
     plot_global_results = False
     plot_populations    = True
-
+    
     # Choose which planet population (thermal/reflected) to plot (defined in the 'band_plot').
     # NB: if thermal_model = "None", light_regime_plot will be forced to be "reflected" (and vice versa)
     light_regime_plot = "thermal+reflected" # 'thermal", "reflected" or "thermal+reflected"
@@ -147,7 +147,7 @@ def main():
     # "obs"  : observationnal space (contrast vs. angular separation)
     # "phys" : physical space (mass vs. projected semi-major axis)
     # "both" : combine the plots in two panels
-    planet_population_space = 'obs'
+    planet_population_space = 'phys'
 
     # Choose how the detection status is defined for population plots.
     # "max"          : use the SNR at the global maximum of the Pdet hypercube.
@@ -168,7 +168,7 @@ def main():
     # K    | 2.19 | 0.39
 
     # Personalized ranges: scalar = fixed value, [min,max] = marginalized range, None = keep default params_ranges
-
+    
     # VRIz
     R_plot            = 80_000           # [dimensionless]
     l0_plot           = 0.74             # [µm]
@@ -178,7 +178,7 @@ def main():
     trans_instru_plot = 0.25             # [e-/ph]
     sigma_m_plot      = 0.01             # [%]
     FoV_plot          = 300              # [mas]
-
+    
     show_golden_sample = False
     show_det_regions   = False
     show_ptype_regions = False
@@ -627,7 +627,7 @@ def main():
         background       = data_bkg["flux"] * 60 * S / 1000**2 # [ph/s/m2/µm/arcsec2] => [ph/mas2/mn/µm]
         background       = Spectrum(wavelength=wave_bkg, flux=background).interpolate_wavelength(wave_output=wave_instru, renorm=False, fill_value=(background[0], background[-1])) # [ph/mas2/mn/µm]
         background.flux *= trans_tel.flux # [ph/mas2/mn/µm] through the telescope
-
+        
         # Plotting transmissions and bkg
         # from fastyield.utils import plot_trans_tell_tel, plot_bkg_skycalc
         # plot_trans_tell_tel(trans_tell=trans_tell, trans_tel=trans_tel)
@@ -1002,34 +1002,12 @@ def main():
                 Pdet_plot = np.zeros_like(Pdet_ptypes_plot[ipt], dtype=float)
             Pdet_plot += N_PT_ptypes_plot[ipt] * Pdet_ptypes_plot[ipt]
         Pdet_plot /= N_PT_plot
-
-        # Helper: normalize to the panel maximum or convert to yield
-        def convert_Pdet_to_plot_quantity(Pdet_curve, N_PT, gain, ymax_panel=None):
-            y = np.asarray(Pdet_curve, dtype=float)
-            if gain:
-                y = 100.0*y/ymax_panel if ymax_panel is not None and np.isfinite(ymax_panel) and ymax_panel > 0 else np.zeros_like(y)
-            else:
-                y = y*N_PT
-            return y
-
-        def get_panel_ymax(curves):
-            values = np.concatenate([np.asarray(curve, dtype=float).ravel() for curve in curves]) if curves else np.array([])
-            return np.nanmax(values) if np.any(np.isfinite(values)) else None
-
+        
 
 
         # %%
         # 2D CORNER PLOT
-
-        def set_log_decade_ticks(axis, vmin, vmax, max_labels=4):
-            # Major ticks at every decade (the default LogLocator drops most of them on small panels spanning many decades),
-            # with labels only every few decades so that they fit in the panel
-            exps = np.arange(np.ceil(np.log10(vmin)), np.floor(np.log10(vmax)) + 1).astype(int)
-            step = max(1, int(np.ceil(len(exps) / max_labels)))
-            axis.set_major_locator(FixedLocator(10.0**exps))
-            axis.set_major_formatter(FuncFormatter(lambda v, pos: rf"$\mathdefault{{10^{{{round(np.log10(v))}}}}}$" if round(np.log10(v)) % step == 0 else ""))
-            axis.set_minor_locator(NullLocator())
-
+        
         # Param values at max pdet_1D
         params_max  = np.zeros((Ndim))
         params_imax = np.zeros((Ndim), dtype=int)
@@ -1460,16 +1438,6 @@ def main():
         if snr_population_mode == "personalized":
             personalized_ranges = {"R": R_plot, "l0": l0_plot, "Dl": Dl_plot, "r_WFE": r_WFE_plot, "IWA": IWA_plot, "trans_instru": trans_instru_plot, "sigma_m": sigma_m_plot, "FoV": FoV_plot}
             allowed_keys        = {"IFU": {"R", "l0", "Dl", "r_WFE", "IWA", "trans_instru", "sigma_m", "FoV"}, "imager": {"l0", "Dl", "r_WFE", "IWA", "trans_instru", "sigma_m", "FoV"}}[instru_type]
-            def format_range(r):
-                return f"{r[0]:g}" if np.isclose(r[0], r[1]) else f"[{r[0]:g}, {r[1]:g}]"
-            def format_value(value):
-                if value is None:
-                    return "None"
-                value = np.asarray(value).ravel()
-                return f"{value[0]:g}" if value.size == 1 else f"[{value[0]:g}, {value[1]:g}]"
-            def print_range(key, value, used=None, warning=""):
-                used_str = f"-> {used}" if used is not None else ""
-                print(f"  {key+'_plot':<18} = {format_value(value):<14} {used_str:<14} {warning}")
             print("\nPopulation plot personalized ranges:")
             for key, value in personalized_ranges.items():
                 if key not in allowed_keys:

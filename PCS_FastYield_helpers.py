@@ -18,6 +18,9 @@ from fastyield.signal_noise import compress_h_for_sigma_base_2, compute_sigma_ba
 # import numpy modules
 import numpy as np
 
+# import matplotlib modules
+from matplotlib.ticker import FixedLocator, FuncFormatter, NullLocator
+
 # import other modules
 from tqdm import tqdm
 from multiprocessing import cpu_count
@@ -91,6 +94,55 @@ def load_instrument_concept(name, concept_dir=None):
 # -------------------------------------------------------------
 
 # --- General helpers ---
+def psf_window_coefficients(wave, spectral_weight, wave_psf, idx_lo, idx_hi):
+    """
+    Spectral-window coefficients for linearly interpolated PSFs.
+
+    wave            : (Nwave,)
+    spectral_weight : (Nwave,)
+    wave_psf        : (Npsf,)
+    idx_lo, idx_hi  : (Nl0, NDl)
+
+    Returns
+    -------
+    coeff : (Npsf, Nl0, NDl)
+
+    For PSF values P[a, ...]:
+
+        integral[j,k,...] =
+            np.einsum("ajk,a...->jk...", coeff, P)
+
+    The spectral_weight must already contain the photon
+    counts per spectral bin (no extra dlambda factor).
+    """
+    wave            = np.asarray(wave, dtype=np.float64)
+    spectral_weight = np.asarray(spectral_weight, dtype=np.float64)
+    wave_psf        = np.asarray(wave_psf, dtype=np.float64)
+
+    if np.any(np.diff(wave) <= 0) or np.any(np.diff(wave_psf) <= 0):
+        raise ValueError("Wavelength axes must be increasing.")
+    if spectral_weight.shape != wave.shape:
+        raise ValueError("Incompatible spectral-weight shape.")
+
+    # Prefix sums of flux and first spectral moment.
+    c0    = np.concatenate(([0.0], np.cumsum(spectral_weight, dtype=np.float64)))
+    c1    = np.concatenate(([0.0], np.cumsum(spectral_weight * wave, dtype=np.float64)))
+    coeff = np.zeros((len(wave_psf), *idx_lo.shape), dtype=np.float64)
+    for a in range(len(wave_psf) - 1):
+        x0            = wave_psf[a]
+        x1            = wave_psf[a + 1]
+        start         = np.searchsorted(wave, x0, side="left")
+        stop          = np.searchsorted(wave, x1, side="right" if a == len(wave_psf)-2 else "left")
+        lo            = np.minimum(np.maximum(idx_lo, start), stop)
+        hi            = np.maximum(lo, np.minimum(idx_hi, stop))
+        s0            = c0[hi] - c0[lo]
+        s1            = c1[hi] - c1[lo]
+        coeff[a]     += (x1 * s0 - s1) / (x1 - x0)
+        coeff[a + 1] += (s1 - x0 * s0) / (x1 - x0)
+
+    return coeff
+
+
 def interp_flat_last_axis(x, y, x0, dtype=None):
     """
     Fast linear interpolation along the last axis, with flat extrapolation.
@@ -815,15 +867,15 @@ def process_SNR(idx):
 
     # Detector parameters are arrays of shape (N_l0).  They are broadcast onto the
     # parameter grid.  The l0 axis is axis 1 for IFU arrays and axis 0 for imager arrays.
-    N_l0    = _SNR_CTX["N_l0"]
-    l0_axis = _SNR_CTX["l0_axis"]
+    N_l0              = _SNR_CTX["N_l0"]
+    l0_axis           = _SNR_CTX["l0_axis"]
     shape_l0          = [1] * DIT.ndim
     shape_l0[l0_axis] = N_l0
-    shape_l0           = tuple(shape_l0)
-    RON0     = np.asarray(_SNR_CTX["RON0"],    dtype=dtype).reshape(shape_l0)
-    RON_lim  = np.asarray(_SNR_CTX["RON_lim"], dtype=dtype).reshape(shape_l0)
-    DC0      = np.asarray(_SNR_CTX["DC0"],     dtype=dtype).reshape(shape_l0)
-    min_DIT  = np.asarray(_SNR_CTX["min_DIT"], dtype=dtype).reshape(shape_l0)
+    shape_l0          = tuple(shape_l0)
+    RON0              = np.asarray(_SNR_CTX["RON0"],    dtype=dtype).reshape(shape_l0)
+    RON_lim           = np.asarray(_SNR_CTX["RON_lim"], dtype=dtype).reshape(shape_l0)
+    DC0               = np.asarray(_SNR_CTX["DC0"],     dtype=dtype).reshape(shape_l0)
+    min_DIT           = np.asarray(_SNR_CTX["min_DIT"], dtype=dtype).reshape(shape_l0)
 
     # --- Number of DIT ---
     N_DIT = np.floor(exposure_time / DIT).astype(dtype)
@@ -1307,3 +1359,50 @@ def save_marginalized_planet_table(planet_table, signal, sigma_fund, sigma_syst,
     print(f"\nMarginalized PCS planet table saved to:\n{output_path}")
 
     return output_path
+
+
+
+
+# --------------------------------------------
+# Plot/prints helpers
+# --------------------------------------------
+
+# Marginalized plots
+def convert_Pdet_to_plot_quantity(Pdet_curve, N_PT, gain, ymax_panel=None):
+    "Normalize to the panel maximum or convert to yield"
+    y = np.asarray(Pdet_curve, dtype=float)
+    if gain:
+        y = 100.0*y/ymax_panel if ymax_panel is not None and np.isfinite(ymax_panel) and ymax_panel > 0 else np.zeros_like(y)
+    else:
+        y = y*N_PT
+    return y
+
+def get_panel_ymax(curves):
+    values = np.concatenate([np.asarray(curve, dtype=float).ravel() for curve in curves]) if curves else np.array([])
+    return np.nanmax(values) if np.any(np.isfinite(values)) else None
+
+def set_log_decade_ticks(axis, vmin, vmax, max_labels=4):
+    # Major ticks at every decade (the default LogLocator drops most of them on small panels spanning many decades),
+    # with labels only every few decades so that they fit in the panel
+    exps = np.arange(np.ceil(np.log10(vmin)), np.floor(np.log10(vmax)) + 1).astype(int)
+    step = max(1, int(np.ceil(len(exps) / max_labels)))
+    axis.set_major_locator(FixedLocator(10.0**exps))
+    axis.set_major_formatter(FuncFormatter(lambda v, pos: rf"$\mathdefault{{10^{{{round(np.log10(v))}}}}}$" if round(np.log10(v)) % step == 0 else ""))
+    axis.set_minor_locator(NullLocator())
+
+
+
+# Population plots
+def format_range(r):
+    return f"{r[0]:g}" if np.isclose(r[0], r[1]) else f"[{r[0]:g}, {r[1]:g}]"
+
+def format_value(value):
+    if value is None:
+        return "None"
+    value = np.asarray(value).ravel()
+    return f"{value[0]:g}" if value.size == 1 else f"[{value[0]:g}, {value[1]:g}]"
+
+def print_range(key, value, used=None, warning=""):
+    used_str = f"-> {used}" if used is not None else ""
+    print(f"  {key+'_plot':<18} = {format_value(value):<14} {used_str:<14} {warning}")
+
