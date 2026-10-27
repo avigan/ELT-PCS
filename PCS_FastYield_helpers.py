@@ -1194,9 +1194,14 @@ def set_log_decade_ticks(axis, vmin, vmax, max_labels=4):
 
 
 
-# Population plots
+# ----------------------------------------------------
+# Population plots: precomputed weights and parallelism
+# ----------------------------------------------------
+
 def format_range(r):
     return f"{r[0]:g}" if np.isclose(r[0], r[1]) else f"[{r[0]:g}, {r[1]:g}]"
+
+
 
 def format_value(value):
     if value is None:
@@ -1204,7 +1209,231 @@ def format_value(value):
     value = np.asarray(value).ravel()
     return f"{value[0]:g}" if value.size == 1 else f"[{value[0]:g}, {value[1]:g}]"
 
+
+
 def print_range(key, value, used=None, warning=""):
     used_str = f"-> {used}" if used is not None else ""
     print(f"  {key+'_plot':<18} = {format_value(value):<14} {used_str:<14} {warning}")
+
+
+
+def prepare_population_axis(axis, value, default_range, prior, name, verbose=False):
+    """
+    Select interpolation or marginalization weights for a population parameter.
+
+    Scalar     : fixed value, linearly interpolated between adjacent nodes.
+    [min, max] : weighted marginalization over the requested interval.
+    None       : use the corresponding default parameter range.
+
+    Requests outside the explored range are cropped with a warning. A singleton
+    axis is always fixed, independently of the requested value.
+    """
+    axis = np.asarray(axis, dtype=float)
+    if axis.ndim != 1 or axis.size == 0 or not np.all(np.isfinite(axis)) or np.any(np.diff(axis) <= 0):
+        raise ValueError(f"Invalid population axis for {name}.")
+
+    # A singleton dimension was fixed by the instrument concept itself.
+    if axis.size == 1:
+        fixed_value = float(axis[0])
+        requested   = np.atleast_1d(value).ravel() if value is not None else np.array([])
+        changed =    value is not None and (requested.size != 1 or not np.isclose(requested[0], fixed_value))
+        if verbose:
+            print_range(name, value, f"{fixed_value:g}" if changed else None, f"(WARNING: parameter fixed at {fixed_value:g})")
+        return np.array([0], dtype=int), np.array([1.0]), True, fixed_value
+
+    # Keep legacy behavior: malformed selections fall back to default ranges.
+    original = default_range if value is None else value
+    try:
+        requested = np.asarray(original, dtype=float).ravel()
+    except (TypeError, ValueError):
+        requested = np.array([])
+    warning = ""
+    if requested.size not in (1, 2) or not np.all(np.isfinite(requested)):
+        requested = np.asarray(default_range, dtype=float).ravel()
+        warning = "(WARNING: expected scalar or [min, max]; default used)"
+    if requested.size not in (1, 2) or not np.all(np.isfinite(requested)):
+        raise ValueError(f"Invalid default parameter range for {name}.")
+    if requested.size == 1:
+        requested = np.repeat(requested, 2)
+    if requested[0] > requested[1]:
+        requested = requested[::-1]
+        warning   = "(WARNING: reversed range reordered)"
+
+    used    = np.clip(requested, axis[0], axis[-1])
+    cropped = not np.allclose(requested, used, rtol=0, atol=1e-12*max(1., abs(axis[0]), abs(axis[-1])))
+    if cropped:
+        warning = f"(WARNING: cropped to [{axis[0]:g}, {axis[-1]:g}])"
+    pmin, pmax = map(float, used)
+    if verbose:
+        changed = value is None or cropped or warning.startswith("(WARNING: expected") or warning.startswith("(WARNING: reversed")
+        print_range(name, value, format_range((pmin, pmax)) if changed else None, warning)
+
+    tol = 1e-10 * max(1.0, abs(axis[0]), abs(axis[-1]))
+    if np.isclose(pmin, pmax, rtol=0, atol=tol):
+        x0    = 0.5 * (pmin + pmax)
+        exact = np.flatnonzero(np.isclose(axis, x0, rtol=0, atol=tol))
+        if exact.size:
+            return np.array([int(exact[0])]), np.array([1.0]), True, x0
+        i1    = int(np.searchsorted(axis, x0))
+        i0    = i1 - 1
+        alpha = (x0 - axis[i0]) / (axis[i1] - axis[i0])
+        return np.array([i0, i1]), np.array([1.0 - alpha, alpha]), True, x0
+
+    idx, weights = get_axis_weights_in_range(axis=axis, pmin=pmin, pmax=pmax, prior=prior)
+    weights      = np.asarray(weights, dtype=float)
+    weights     /= np.sum(weights)
+    return np.asarray(idx, dtype=int), weights, False, (pmin, pmax)
+
+
+
+_POP_CTX = None
+
+def init_worker_population(ctx):
+    """Open the raw per-planet memmaps once in each worker."""
+    global _POP_CTX
+    _POP_CTX = ctx
+    for key in ("signal", "halo", "background", "DIT", "systematics"):
+        path = ctx.get(f"{key}_path")
+        if path is not None:
+            _POP_CTX[key] = np.load(path, mmap_mode="r")
+
+
+
+def process_population(idx):
+    """Return the mean SNR and five noise variances for one planet."""
+    ctx              = _POP_CTX
+    indices, weights = ctx["indices"], ctx["weights"]
+    rest_names       = ("Dl", "r_WFE", "IWA", "trans_instru")
+    rest_idx         = [indices[name] for name in rest_names]
+    rest_weight      = ctx["rest_weight"]
+    sigma_m_percent  = ctx["sigma_m_percent"]
+    sigma_m_2        = (sigma_m_percent / 100.0)**2
+    vis              = ctx["visibility"][idx]
+
+    if vis <= 0:
+        return idx, (0.0, np.nan, np.nan, np.nan, np.nan, np.nan)
+
+    numerator   = np.zeros(6, dtype=float)
+    denominator = 0.0
+
+    R_idx     = indices["R"] if ctx["instru_type"] == "IFU" else [None]
+    R_weights = weights["R"] if ctx["instru_type"] == "IFU" else [1.0]
+    for ir, wr in zip(R_idx, R_weights):
+        for il0, wl0 in zip(indices["l0"], weights["l0"]):
+            position   = (idx, int(ir), int(il0)) if ir is not None else (idx, int(il0))
+            selection  = np.ix_(*rest_idx)
+            signal     = np.asarray(ctx["signal"][position][selection], dtype=float)
+            halo       = np.asarray(ctx["halo"][position][selection], dtype=float)
+            background = np.asarray(ctx["background"][position][selection], dtype=float)
+            DIT        = np.asarray(ctx["DIT"][position][selection], dtype=float)
+            if ctx["instru_type"] == "IFU":
+                syst_base      = np.asarray(ctx["systematics"][position][selection], dtype=float)
+                spectral_valid = ctx["valid_windows"][int(ir), int(il0), indices["Dl"]][:, None, None, None, None]
+            elif ctx["instru_type"] == "imager":
+                syst_base      = halo**2
+                spectral_valid = True
+
+            valid_DIT = np.isfinite(DIT) & (DIT > 0)
+            DIT_safe  = np.where(valid_DIT, DIT, 1.0)
+            N_DIT     = np.clip(np.floor(ctx["exposure_time"] / DIT_safe), 1, None)
+            ron       = sigma_RON_2_from_DIT(DIT=DIT_safe, min_DIT=ctx["min_DIT"][il0], RON0=ctx["RON0"][il0], RON_lim=ctx["RON_lim"][il0], A_FWHM=ctx["A_FWHM"], dtype=float, is_UTR=ctx["is_UTR"][il0])
+            dark      = ctx["DC0"][il0] * DIT_safe * ctx["A_FWHM"]
+
+            vhalo    = N_DIT * halo
+            vbkg     = N_DIT * background
+            vron     = N_DIT * ron
+            vdark    = N_DIT * dark
+            vsyst    = N_DIT[..., None]**2 * syst_base[..., None] * sigma_m_2
+            vfund    = vhalo + vbkg + vron + vdark
+            variance = vfund[..., None] + vsyst
+            with np.errstate(divide="ignore", invalid="ignore", over="ignore"):
+                snr = N_DIT[..., None] * signal[..., None] / np.sqrt(variance)
+
+            valid = valid_DIT[..., None] & spectral_valid & np.isfinite(snr) & np.isfinite(variance) & (variance > 0)
+            if not np.any(valid):
+                continue
+            w             = (wr * wl0) * rest_weight
+            valid_weights = np.where(valid, w, 0.0)
+            denominator  += np.sum(valid_weights, dtype=float)
+            numerator[0] += np.sum(np.where(valid, snr, 0.0) * valid_weights, dtype=float)
+            for j, v in enumerate((vhalo, vbkg, vron, vdark), start=1):
+                numerator[j] += np.sum(np.where(valid, v[..., None], 0.0) * valid_weights, dtype=float)
+            numerator[5] += np.sum(np.where(valid, vsyst, 0.0) * valid_weights, dtype=float)
+
+    if denominator <= 0:
+        return idx, (np.nan, np.nan, np.nan, np.nan, np.nan, np.nan)
+    numerator    /= denominator
+    numerator[0] *= vis
+    return idx, tuple(numerator)
+
+
+
+def get_population_results(instru_type, signal_planets, sigma_halo_2_planets, sigma_bkg_2_planets, sigma_syst_base_2_planets, DIT_planets, separation_planets, axes, default_ranges, priors, plot_parameters, detector_l0, RON0, RON_lim, DC0, min_DIT, is_UTR, exposure_time, A_FWHM, valid_windows_3D=None, nproc=None, chunksize=8):
+    """Compute population diagnostics without building the full SNR hypercube."""
+    names          = ("R", "l0", "Dl", "r_WFE", "IWA", "trans_instru", "sigma_m", "FoV") if instru_type == "IFU" else ("l0", "Dl", "r_WFE", "IWA", "trans_instru", "sigma_m", "FoV")
+    axes           = dict(zip(names, axes))
+    default_ranges = dict(zip(names, default_ranges))
+    priors         = dict(zip(names, priors))
+    print("\nPopulation plot personalized ranges:")
+    if instru_type == "imager" and plot_parameters.get("R") is not None:
+        print_range("R", plot_parameters["R"], warning="(WARNING: not used for imager)")
+    prepared = {name: prepare_population_axis(axis=axes[name], value=plot_parameters.get(name), default_range=default_ranges[name], prior=priors[name], name=name, verbose=True) for name in names}
+    print()
+    indices = {name: prepared[name][0] for name in names}
+    weights = {name: prepared[name][1] for name in names}
+
+    # Keep the legacy interpolation behavior, but identify mixed detector families.
+    if prepared["l0"][2] and len(set(np.asarray(detector_l0)[indices["l0"]])) > 1:
+        print("WARNING: l0_plot interpolation mixes two detector technologies. The resulting SNR is only an approximation.")
+
+    if instru_type == "IFU":
+        if valid_windows_3D is None:
+            raise ValueError("valid_windows_3D is required for IFU population diagnostics.")
+        r_idx, l_idx, d_idx = (indices[k] for k in ("R", "l0", "Dl"))
+        submask             = np.asarray(valid_windows_3D)[np.ix_(r_idx, l_idx, d_idx)]
+        positive_weights    = (weights["R"][:, None, None] * weights["l0"][None, :, None] * weights["Dl"][None, None, :]) > 0
+        if not np.any(submask & positive_weights):
+            print("WARNING: no valid IFU spectral configurations for the requested *_plot values; population SNRs will be undefined.")
+            count = len(separation_planets)
+            undefined = np.full(count, np.nan, dtype=float)
+            return dict(SNR=undefined.copy(), dominant_noise=np.full(count, "Unknown", dtype=object), var_halo=undefined.copy(), var_bkg=undefined.copy(), var_RON=undefined.copy(), var_DC=undefined.copy(), var_syst=undefined.copy())
+        if np.any(~submask & positive_weights):
+            print("WARNING: some IFU spectral interpolation/marginalization nodes are invalid and will be excluded with weight renormalization.")
+
+    if prepared["FoV"][2]:
+        visibility = (2 * np.asarray(separation_planets, dtype=float) <= float(prepared["FoV"][3])).astype(float)
+    else:
+        fov_values = axes["FoV"][indices["FoV"]]
+        visibility = np.sum(weights["FoV"][:, None] * (2 * np.asarray(separation_planets)[None, :] <= fov_values[:, None]), axis=0)
+
+    rest_names  = ("Dl", "r_WFE", "IWA", "trans_instru", "sigma_m")
+    rest_shape  = tuple(len(indices[name]) for name in rest_names)
+    rest_weight = np.ones(rest_shape, dtype=float)
+    for dim, name in enumerate(rest_names):
+        shape        = [1] * len(rest_names)
+        shape[dim]   = len(indices[name])
+        rest_weight *= weights[name].reshape(shape)
+
+    ctx       = dict(instru_type=instru_type, exposure_time=float(exposure_time), A_FWHM=float(A_FWHM), indices=indices, weights=weights, rest_weight=rest_weight, sigma_m_percent=np.asarray(axes["sigma_m"])[indices["sigma_m"]], visibility=visibility, valid_windows=valid_windows_3D, RON0=np.asarray(RON0, dtype=float), RON_lim=np.asarray(RON_lim, dtype=float), DC0=np.asarray(DC0, dtype=float), min_DIT=np.asarray(min_DIT, dtype=float), is_UTR=np.asarray(is_UTR, dtype=bool), signal_path=str(signal_planets.filename), halo_path=str(sigma_halo_2_planets.filename), background_path=str(sigma_bkg_2_planets.filename), DIT_path=str(DIT_planets.filename), systematics_path=str(sigma_syst_base_2_planets.filename) if instru_type == "IFU" else None)
+    n_planets = len(separation_planets)
+    results   = np.full((n_planets, 6), np.nan, dtype=float)
+    workers   = max(1, min(n_planets, (cpu_count() - 3 if nproc is None else nproc)))
+    if workers == 1:
+        init_worker_population(ctx)
+        for i in tqdm(range(n_planets), desc="Computing population diagnostics"):
+            idx, values  = process_population(i)
+            results[idx] = values
+    else:
+        mp_ctx = mp.get_context("spawn" if sys.platform.startswith(("win", "darwin")) else "fork")
+        with mp_ctx.Pool(processes=workers, initializer=init_worker_population, initargs=(ctx,)) as pool:
+            for idx, values in tqdm(pool.imap_unordered(process_population, range(n_planets), chunksize=chunksize), total=n_planets, desc="Computing population diagnostics"):
+                results[idx] = values
+
+    labels          = np.array(["Stellar halo", "Background", "Read noise", "Dark current", "Systematics"], dtype=object)
+    noise           = results[:, 1:]
+    known           = np.any(np.isfinite(noise), axis=1) & (visibility > 0)
+    dominant        = np.full(n_planets, "Unknown", dtype=object)
+    dominant[known] = labels[np.nanargmax(noise[known], axis=1)]
+    return dict(SNR=results[:, 0], dominant_noise=dominant, var_halo=results[:, 1], var_bkg=results[:, 2], var_RON=results[:, 3], var_DC=results[:, 4], var_syst=results[:, 5])
+
 
