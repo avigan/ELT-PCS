@@ -26,6 +26,7 @@ from tqdm import tqdm
 from multiprocessing import cpu_count
 import multiprocessing as mp
 from pathlib import Path
+from tempfile import TemporaryDirectory
 import sys
 import yaml
 
@@ -114,6 +115,8 @@ def get_star_mag(planet, band):
 _IM_CTX  = None
 _IFU_CTX = None
 _SNR_CTX = None
+_MASK_CTX = None
+_PDET_CTX = None
 
 
 
@@ -783,7 +786,23 @@ def get_SNR(instru, instru_type, post_processing, exposure_time, min_DIT, RON0, 
 # Function for computing detection mask
 # -------------------------------------
 
-def get_mask_detections(SNR_planets, SNR_thr, sim_dir, suffix, target_chunk_mb=2048):
+# Multiprocessing workers for independent planet slices
+def init_worker_mask(ctx):
+    global _MASK_CTX
+    _MASK_CTX = {"SNR": np.load(ctx["SNR_path"], mmap_mode="r"), "mask": np.load(ctx["mask_path"], mmap_mode="r+"), "SNR_thr": ctx["SNR_thr"]}
+
+
+def process_mask(idx):
+    _MASK_CTX["mask"][idx] = _MASK_CTX["SNR"][idx] >= _MASK_CTX["SNR_thr"]
+    return idx
+
+
+def get_mask_detections(SNR_planets, SNR_thr, sim_dir, suffix, target_chunk_mb=2048, nproc=1, chunksize=8, parallel_min_mb=256):
+    """Build the detection mask on disk, optionally parallelized over planets.
+
+    Use the existing vectorized/chunked NumPy path for small volumes, since
+    reading and writing the arrays is mostly limited by memory/disk bandwidth.
+    """
 
     shape_full = SNR_planets.shape
     shape_grid = shape_full[1:]
@@ -805,10 +824,21 @@ def get_mask_detections(SNR_planets, SNR_thr, sim_dir, suffix, target_chunk_mb=2
     target_bytes     = int(target_chunk_mb * 1024**2)
     chunk_size       = int(max(1, target_bytes // max(bytes_per_planet, 1)))
 
+    # Limit concurrent memory-mapped I/O; multiprocessing is not always faster here.
+    workers = min(max(1, int(nproc)), N_PT, 4)
+    use_parallel = workers > 1 and isinstance(SNR_planets, np.memmap) and bytes_per_planet * N_PT >= parallel_min_mb * 1024**2
+
     print()
-    for i0 in tqdm(range(0, N_PT, chunk_size), desc="Building mask_detections"):
-        i1                     = min(i0 + chunk_size, N_PT)
-        mask_detections[i0:i1] = SNR_planets[i0:i1] >= SNR_thr
+    if use_parallel:
+        mask_ctx = {"SNR_path": str(SNR_planets.filename), "mask_path": str(mask_detections.filename), "SNR_thr": float(SNR_thr)}
+        ctx_mp = mp.get_context("spawn" if sys.platform.startswith(("win", "darwin")) else "fork")
+        with ctx_mp.Pool(processes=workers, initializer=init_worker_mask, initargs=(mask_ctx,)) as pool:
+            for _ in tqdm(pool.imap_unordered(process_mask, range(N_PT), chunksize=chunksize), total=N_PT, desc="Building mask_detections"):
+                pass
+    else:
+        for i0 in tqdm(range(0, N_PT, chunk_size), desc="Building mask_detections"):
+            i1                     = min(i0 + chunk_size, N_PT)
+            mask_detections[i0:i1] = SNR_planets[i0:i1] >= SNR_thr
 
     mask_detections.flush()
     return mask_detections
@@ -819,7 +849,35 @@ def get_mask_detections(SNR_planets, SNR_thr, sim_dir, suffix, target_chunk_mb=2
 # Function for computing detection probability
 # --------------------------------------------
 
-def get_Pdet(mask_detections, FoV, p0_FoV, dtype, indices=None, target_chunk_mb=2048, jump_before_tqdm=True, valid_windows_3D=None):
+# Each worker accumulates a separate FoV-entry bucket into a shared disk memmap.
+def init_worker_Pdet(ctx):
+    global _PDET_CTX
+    _PDET_CTX = dict(ctx)
+    _PDET_CTX["mask"]    = np.load(ctx["mask_path"], mmap_mode="r")
+    _PDET_CTX["buckets"] = np.load(ctx["buckets_path"], mmap_mode="r+")
+
+
+def process_Pdet_bucket(p):
+    ctx        = _PDET_CTX
+    indices    = ctx["groups"][p]
+    chunk_size = ctx["chunk_size"]
+    bucket     = np.zeros(ctx["shape_grid"], dtype=np.uint32)
+
+    # Only one FoV bucket is held in memory per worker. No worker writes another's bucket.
+    for i0 in range(0, len(indices), chunk_size):
+        idx     = indices[i0:i0 + chunk_size]
+        bucket += np.sum(ctx["mask"][idx], axis=0, dtype=np.uint32)
+
+    ctx["buckets"][p] = bucket
+    return p
+
+
+def get_Pdet(mask_detections, FoV, p0_FoV, dtype, indices=None, target_chunk_mb=2048, jump_before_tqdm=True, valid_windows_3D=None, nproc=1, parallel_min_mb=64):
+    """Compute Pdet with an optional FoV-bucket multiprocessing path.
+
+    Results are normalized by the entire selected population, including planets
+    outside the FoV. A sequential fallback preserves the original algorithm.
+    """
     # If no subset is provided, all planets are included
     if indices is None:
         indices = np.arange(len(p0_FoV), dtype=np.int32)
@@ -835,25 +893,62 @@ def get_Pdet(mask_detections, FoV, p0_FoV, dtype, indices=None, target_chunk_mb=
             Pdet[~valid_windows_3D] = np.nan
         return Pdet
 
-    # buckets[..., p] = sum of detection masks for planets with gating index p0 = p
-    buckets = np.zeros(shape_grid + (N_FoV,), dtype=np.uint32)
-
+    # A selected population can be empty; keep the output shape unchanged.
     if N_PT == 0:
-        return apply_validity_mask(buckets.astype(dtype))
+        return apply_validity_mask(np.zeros(shape_grid + (N_FoV,), dtype=dtype))
 
     # Precompute FoV gating once
     p0_sel = p0_FoV[indices]
     valid  = (p0_sel < N_FoV)
 
     if not np.any(valid):
-        return apply_validity_mask(buckets.astype(dtype))
+        return apply_validity_mask(np.zeros(shape_grid + (N_FoV,), dtype=dtype))
 
     indices_valid = indices[valid]
     p0_valid      = p0_sel[valid]
 
+    # Independent FoV-entry groups can be reduced in parallel with no write conflicts.
+    # Keep small subsets and ordinary NumPy arrays on the original sequential path.
+    grid_size    = int(np.prod(shape_grid, dtype=np.int64))
+    groups       = [indices_valid[p0_valid == p] for p in range(N_FoV)]
+    active       = [p for p, group in enumerate(groups) if len(group) > 0]
+    workers      = min(max(1, int(nproc)), len(active), 4)
+    use_parallel = workers > 1 and isinstance(mask_detections, np.memmap) and np.all(p0_valid >= 0) and len(indices_valid) * grid_size >= parallel_min_mb * 1024**2
+
+    if use_parallel:
+        # Each worker holds one uint32 grid plus input chunks capped near 128 MiB
+        # (or one full planet slice when a single slice exceeds this limit).
+        worker_chunk_mb   = min(target_chunk_mb, 128)
+        worker_chunk_size = max(1, int(worker_chunk_mb * 1024**2 // max(grid_size, 1)))
+
+        if jump_before_tqdm:
+            print()
+        # Keep temporary buckets next to the original memmap, and clean on exit.
+        with TemporaryDirectory(prefix="tmp_Pdet_", dir=str(Path(mask_detections.filename).parent)) as tmpdir:
+            buckets_path = Path(tmpdir) / "buckets.npy"
+            buckets      = np.lib.format.open_memmap(buckets_path, mode="w+", dtype=np.uint32, shape=(N_FoV,) + shape_grid)
+            buckets[:]   = 0
+            buckets.flush()
+
+            pdet_ctx = {"mask_path": str(mask_detections.filename), "buckets_path": str(buckets_path), "groups": groups, "shape_grid": shape_grid, "chunk_size": worker_chunk_size}
+            ctx_mp   = mp.get_context("spawn" if sys.platform.startswith(("win", "darwin")) else "fork")
+            with ctx_mp.Pool(processes=workers, initializer=init_worker_Pdet, initargs=(pdet_ctx,)) as pool:
+                for _ in tqdm(pool.imap_unordered(process_Pdet_bucket, active, chunksize=1), total=len(active), desc="Computing detection probability by FoV bins"):
+                    pass
+
+            # A planet entering at p0 contributes to every FoV bin >= p0.
+            # uint64 accumulation is consistent with NumPy's default cumsum on uint32.
+            counts = np.cumsum(buckets, axis=0, dtype=np.uint64)
+            Pdet   = np.ascontiguousarray(np.moveaxis(counts, 0, -1) / N_PT, dtype=dtype)
+            del counts, buckets
+
+        return apply_validity_mask(Pdet)
+
+    # Sequential fallback: buckets[..., p] accumulate planets first visible at p.
+    buckets = np.zeros(shape_grid + (N_FoV,), dtype=np.uint32)
+
     # Approximate chunk size from memory budget:
     # only one boolean chunk is materialized now
-    grid_size        = int(np.prod(shape_grid, dtype=np.int64))
     bytes_per_bool   = np.dtype(bool).itemsize
     bytes_per_planet = grid_size * bytes_per_bool
     target_bytes     = int(target_chunk_mb * 1024**2)

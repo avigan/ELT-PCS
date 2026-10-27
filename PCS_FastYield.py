@@ -867,7 +867,7 @@ def main():
         # For IFU (8D):    (planets, R, l0, Dl, r_WFE, IWA, trans_instru, sigma_m)
         # For Imager (7D): (planets,    l0, Dl, r_WFE, IWA, trans_instru, sigma_m)
         SNR_planets     = fyh.get_SNR(instru=instru, instru_type=instru_type, post_processing=post_processing, exposure_time=exposure_time, min_DIT=min_DIT, RON0=RON0, RON_lim=RON_lim, is_UTR=is_UTR, DC0=DC0, A_FWHM=A_FWHM, Rc=Rc, filter_type=filter_type, signal_planets=signal_planets, sigma_halo_2_planets=sigma_halo_2_planets, sigma_bkg_2_planets=sigma_bkg_2_planets, sigma_syst_base_2_planets=sigma_syst_base_2_planets, DIT_planets=DIT_planets, R=R if instru_type == "IFU" else None, Dl=Dl if instru_type == "IFU" else None, sigma_m=sigma_m, sim_dir=sim_dir_concept, suffix=suffix, dtype=dtype)
-        mask_detections = fyh.get_mask_detections(SNR_planets=SNR_planets, SNR_thr=SNR_thr, sim_dir=sim_dir_concept, suffix=suffix)
+        mask_detections = fyh.get_mask_detections(SNR_planets=SNR_planets, SNR_thr=SNR_thr, sim_dir=sim_dir_concept, suffix=suffix, nproc=nproc, chunksize=chunksize)
 
         # Precompute FoV gating once
         p0_FoV = np.searchsorted(FoV / 2, separation_planets, side="left").astype(np.int32)
@@ -875,7 +875,7 @@ def main():
         # Getting ndim detection probability
         # For IFU (8D):    (R, l0, Dl, r_WFE, IWA, trans_instru, sigma_m, FoV)
         # For Imager (7D): (   l0, Dl, r_WFE, IWA, trans_instru, sigma_m, FoV)
-        Pdet = fyh.get_Pdet(mask_detections=mask_detections, FoV=FoV, p0_FoV=p0_FoV, dtype=dtype, valid_windows_3D=valid_windows_3D)
+        Pdet = fyh.get_Pdet(mask_detections=mask_detections, FoV=FoV, p0_FoV=p0_FoV, dtype=dtype, valid_windows_3D=valid_windows_3D, nproc=nproc)
 
         # --- Removing useless dimensions ---
         # Identify dimensions to remove (if size == 1)
@@ -955,13 +955,13 @@ def main():
             if "thermal" in light_regime_plot:
                 print(f"\n{label_ptypes[ptype]} in thermal light:")
                 idx_ptype_thermal  = np.where(mask_ptype & mask_thermal)[0]
-                Pdet_ptype_thermal = fyh.get_Pdet(mask_detections=mask_detections, FoV=FoV, p0_FoV=p0_FoV, dtype=dtype, indices=idx_ptype_thermal, jump_before_tqdm=False, valid_windows_3D=valid_windows_3D)
+                Pdet_ptype_thermal = fyh.get_Pdet(mask_detections=mask_detections, FoV=FoV, p0_FoV=p0_FoV, dtype=dtype, indices=idx_ptype_thermal, jump_before_tqdm=False, valid_windows_3D=valid_windows_3D, nproc=nproc)
             else:
                 Pdet_ptype_thermal = None
             if "reflected" in light_regime_plot:
                 print(f"\n{label_ptypes[ptype]} in reflected light:")
                 idx_ptype_reflected  = np.where(mask_ptype & mask_reflected)[0]
-                Pdet_ptype_reflected = fyh.get_Pdet(mask_detections=mask_detections, FoV=FoV, p0_FoV=p0_FoV, dtype=dtype, indices=idx_ptype_reflected, jump_before_tqdm=False, valid_windows_3D=valid_windows_3D)
+                Pdet_ptype_reflected = fyh.get_Pdet(mask_detections=mask_detections, FoV=FoV, p0_FoV=p0_FoV, dtype=dtype, indices=idx_ptype_reflected, jump_before_tqdm=False, valid_windows_3D=valid_windows_3D, nproc=nproc)
             else:
                 Pdet_ptype_reflected = None
             for idim in sorted(dim_to_remove, reverse=True):
