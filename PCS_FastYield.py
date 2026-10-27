@@ -12,7 +12,7 @@ os.environ["NUMBA_NUM_THREADS"]    = "1"
 from fastyield.config import rad2arcsec, h, c, R0_min, R0_max, lmin_bands, lmax_bands, archive_path, simulated_path, get_sim_data_path, dpi_fig
 from fastyield.get_specs import load_tell_trans, get_detector_specs
 from fastyield.FastYield import load_planet_table, get_mask_planet_type, yield_population_plot, yield_heatmap_ELT
-from fastyield.FastYield_helpers import print_simulation_summary, make_suffix, write_meta, memmap_nbytes, format_nbytes, create_memmap_with_log, convert_Pdet_to_plot_quantity, get_panel_ymax, set_log_decade_ticks, format_range, print_range
+from fastyield.FastYield_helpers import print_simulation_summary, make_suffix, write_meta, memmap_nbytes, format_nbytes, create_memmap_with_log
 from fastyield.spectrum import get_wavelength_axis_constant_R, Spectrum, load_vega_spectrum, get_spectrum_contribution_name_model, get_wave_K, get_counts_from_density
 
 # import astropy modules
@@ -1048,7 +1048,7 @@ def main():
                     if params_islog[idim]:
                         ax.set_xscale("log")
                     if params_names[idim] == "sigma_m [%]":
-                        set_log_decade_ticks(ax.xaxis, xmin[idim], xmax[idim])
+                        fyh.set_log_decade_ticks(ax.xaxis, xmin[idim], xmax[idim])
 
                 elif jpanel < ipanel:
                     pdet_2D = fyh.reduce_hcube(hcube=Pdet_plot, dims_to_keep=[jdim, idim], params=params, params_ranges=params_ranges, params_priors=params_priors, params_names=params_names, verbose=False)
@@ -1076,9 +1076,9 @@ def main():
                     if params_islog[idim]:
                         ax.set_yscale("log")
                     if params_names[jdim] == "sigma_m [%]":
-                        set_log_decade_ticks(ax.xaxis, xmin[jdim], xmax[jdim])
+                        fyh.set_log_decade_ticks(ax.xaxis, xmin[jdim], xmax[jdim])
                     if params_names[idim] == "sigma_m [%]":
-                        set_log_decade_ticks(ax.yaxis, xmin[idim], xmax[idim])
+                        fyh.set_log_decade_ticks(ax.yaxis, xmin[idim], xmax[idim])
 
                 # Hide major and minor tick labels (log axes spanning < 1 decade label their minor ticks)
                 if ipanel < Ndim - 1:
@@ -1120,9 +1120,9 @@ def main():
                 if "reflected" in light_regime_plot and N_PT_ptypes_reflected[ipt] > 0:
                     Pdet_reflected = fyh.reduce_hcube(hcube=Pdet_ptypes_reflected[ipt], dims_to_keep=[idim], params=params, params_ranges=params_ranges, params_priors=params_priors, params_names=params_names, verbose=False)
                     curves.append((Pdet_reflected, N_PT_ptypes_reflected[ipt], ptype, "C0"))
-            ymax_panel = get_panel_ymax([curve[0] for curve in curves]) if gain else None
+            ymax_panel = fyh.get_panel_ymax([curve[0] for curve in curves]) if gain else None
             for Pdet_1D, N_PT_curve, ptype, color in curves:
-                y = convert_Pdet_to_plot_quantity(Pdet_curve=Pdet_1D, N_PT=N_PT_curve, gain=gain, ymax_panel=ymax_panel)
+                y = fyh.convert_Pdet_to_plot_quantity(Pdet_curve=Pdet_1D, N_PT=N_PT_curve, gain=gain, ymax_panel=ymax_panel)
                 ax.plot(params[idim], y, ls="-", lw=lw, c=color, marker=marker_ptypes[ptype], ms=ms, markerfacecolor="white", markeredgewidth=1.5, alpha=alpha, zorder=3)
 
             # Axis formatting
@@ -1257,9 +1257,9 @@ def main():
                         params_ranges_band[idx_l0] = (l0_band, l0_band)
                         Pdet_1D                    = fyh.reduce_hcube(hcube=Pdet_ptypes_plot[ipt], dims_to_keep=[idim], params=params, params_ranges=params_ranges_band, params_priors=params_priors, params_names=params_names, verbose=False)
                         curves.append((Pdet_1D, N_PT_ptypes_plot[ipt], ptype, cmap(iband)))
-                ymax_panel = get_panel_ymax([curve[0] for curve in curves]) if gain else None
+                ymax_panel = fyh.get_panel_ymax([curve[0] for curve in curves]) if gain else None
                 for Pdet_1D, N_PT_curve, ptype, color in curves:
-                    y = convert_Pdet_to_plot_quantity(Pdet_curve=Pdet_1D, N_PT=N_PT_curve, gain=gain, ymax_panel=ymax_panel)
+                    y = fyh.convert_Pdet_to_plot_quantity(Pdet_curve=Pdet_1D, N_PT=N_PT_curve, gain=gain, ymax_panel=ymax_panel)
                     ax.plot(params[idim], y, ls="-", lw=lw, c=color, marker=marker_ptypes[ptype], ms=ms, markerfacecolor="white", markeredgewidth=1.5, alpha=alpha, zorder=3)
                 if idim == idx_l0:
                     for iband, l0_band in enumerate(band_l0_values):
@@ -1441,7 +1441,7 @@ def main():
             print("\nPopulation plot personalized ranges:")
             for key, value in personalized_ranges.items():
                 if key not in allowed_keys:
-                    print_range(key, value, warning=f"(WARNING: not used for {instru_type})")
+                    fyh.print_range(key, value, warning=f"(WARNING: not used for {instru_type})")
                     continue
                 idx = next((idx for idx, name in enumerate(params_names) if name == key or key in name), None)
                 # Dimension existed originally but was removed because it was fixed
@@ -1451,20 +1451,20 @@ def main():
                         fixed_value = float(np.asarray(orig_params[idx_orig])[0])
                         requested   = np.asarray(value, dtype=float).ravel() if value is not None else np.array([])
                         changed     = value is not None and (requested.size != 1 or not np.isclose(requested[0], fixed_value))
-                        print_range(key, value, f"{fixed_value:g}" if changed else None, f"(WARNING: parameter fixed at {fixed_value:g})")
+                        fyh.print_range(key, value, f"{fixed_value:g}" if changed else None, f"(WARNING: parameter fixed at {fixed_value:g})")
                     else:
-                        print_range(key, value, warning="(WARNING: parameter unavailable)")
+                        fyh.print_range(key, value, warning="(WARNING: parameter unavailable)")
                     continue
                 # None -> keep default range
                 if value is None:
-                    print_range(key, value, format_range(params_ranges_pop[idx]))
+                    fyh.print_range(key, value, fyh.format_range(params_ranges_pop[idx]))
                     continue
                 axis      = np.asarray(params[idx], dtype=float)
                 requested = np.asarray(value, dtype=float).ravel()
                 if requested.size == 1:
                     requested = np.repeat(requested, 2)
                 elif requested.size != 2:
-                    print_range(key, value, format_range(params_ranges_pop[idx]), "(WARNING: expected scalar or [min, max]; default used)")
+                    fyh.print_range(key, value, fyh.format_range(params_ranges_pop[idx]), "(WARNING: expected scalar or [min, max]; default used)")
                     continue
                 warning = ""
                 if requested[0] > requested[1]:
@@ -1475,7 +1475,7 @@ def main():
                 changed = not np.allclose(requested, used)
                 if changed:
                     warning = f"(WARNING: cropped to [{axis[0]:g}, {axis[-1]:g}])"
-                print_range(key, value, format_range(params_ranges_pop[idx]) if changed else None, warning)
+                fyh.print_range(key, value, fyh.format_range(params_ranges_pop[idx]) if changed else None, warning)
             print()
 
         # Best-Pdet configuration
