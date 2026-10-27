@@ -135,7 +135,7 @@ def main():
     # IWA_min, IWA_max     = 1.0, 5.0
 
     # --- Plots configuration ---
-    plot_global_results = False
+    plot_global_results = True
     plot_populations    = True
     
     # Definition of the standard photometric bands
@@ -150,11 +150,11 @@ def main():
     # H    | 1.63 | 0.31
     # K    | 2.19 | 0.39
 
-    # Plot parameters range: 
-    # scalar     = fixed value
-    # [min, max] = marginalized range
-    # None       = default params_ranges
-    
+    # --- Plot parameter ranges (used for global and population plots) ---
+    # scalar     = fixed value (interpolated if necessary)
+    # [min, max] = marginalized range (weighted average)
+    # None       = full simulated parameter range [min, max]
+
     # VRIz
     R_plot            = 80_000           # [dimensionless]
     l0_plot           = 0.74             # [µm]
@@ -164,6 +164,15 @@ def main():
     trans_instru_plot = 0.25             # [e-/ph]
     sigma_m_plot      = 0.01             # [%]
     FoV_plot          = 300              # [mas]
+    
+    # R_plot            = None           # [dimensionless]
+    # l0_plot           = None           # [µm]
+    # Dl_plot           = None           # [µm]
+    # r_WFE_plot        = None           # [dimensionless]
+    # IWA_plot          = None           # [lambda0_band/D]
+    # trans_instru_plot = None           # [e-/ph]
+    # sigma_m_plot      = None           # [%]
+    # FoV_plot          = None           # [mas]
     
     # Choose which planet population (thermal/reflected) to plot (defined in the 'band_plot').
     # NB: if thermal_model = "None", light_regime_plot will be forced to be "reflected" (and vice versa)
@@ -816,7 +825,7 @@ def main():
     # Define parameters and their names
     if instru_type == "IFU":
         params         = [R,                           l0,                                                Dl,                                           r_WFE,                                 IWA,                                                       trans_instru,                                    100*sigma_m,                                        FoV]                     # params axis
-        params_ranges  = [(R.min(), R.max()),          (l0.min(), l0.max()),                              (Dl.min(), Dl.max()),                         (r_WFE_ref, r_WFE_ref),                (IWA_ref, IWA_ref),                                        (trans_instru.min(), trans_instru.max()),        ((100*sigma_m).min(), (100*sigma_m).min()),         (FoV.max(), FoV.max())]  # params ranges for marginalization
+        params_ranges  = [R_plot,                      l0_plot,                                           Dl_plot,                                      r_WFE_plot,                            IWA_plot,                                                  trans_instru_plot,                               sigma_m_plot,                                       FoV_plot]                # Plot parameter selections (scalar, range or None)
         params_priors  = ["log-uniform",               "uniform",                                         "uniform",                                    "uniform",                             "log-uniform",                                             "uniform",                                       "log-uniform",                                      "log-uniform"]           # params priors for marginalization
         params_islog   = [True,                        False,                                             False,                                        False,                                 True,                                                      False,                                           True,                                               True]                    # params space (linspace or logspace)
         params_isint   = [True,                        False,                                             False,                                        False,                                 False,                                                     False,                                           False,                                              True]                    # params rounded format
@@ -826,7 +835,7 @@ def main():
 
     elif instru_type == "imager":
         params         = [l0,                                                Dl,                                         r_WFE,                                 IWA,                                                        trans_instru,                                    100*sigma_m,                                        FoV]                    # params axis
-        params_ranges  = [(l0.min(), l0.max()),                              (Dl.min(), Dl.max()),                       (r_WFE_ref, r_WFE_ref),                (IWA_ref, IWA_ref),                                         (trans_instru.min(), trans_instru.max()),        ((100*sigma_m).min(), (100*sigma_m).min()),         (FoV.max(), FoV.max())] # params ranges for marginalization
+        params_ranges  = [l0_plot,                                           Dl_plot,                                    r_WFE_plot,                            IWA_plot,                                                   trans_instru_plot,                               sigma_m_plot,                                       FoV_plot]               # Plot parameter selections (scalar, range or None)
         params_priors  = ["uniform",                                         "uniform",                                  "uniform",                             "log-uniform",                                              "uniform",                                       "log-uniform",                                      "log-uniform"]          # params priors for marginalization
         params_islog   = [False,                                             False,                                      False,                                 True,                                                       False,                                           True,                                               True]                   # params space (linspace or logspace)
         params_isint   = [False,                                             False,                                      False,                                 False,                                                      False,                                           False,                                              False]                  # params rounded format
@@ -834,10 +843,19 @@ def main():
         params_names_l = [r"$\lambda_0$ [µm]",                               r"$\Delta\lambda$ [µm]",                    r"$r_{\mathrm{WFE}}$",                 r"$IWA$ [$\lambda_{0,\mathrm{band}}/D$]",                   r"$\gamma_{instru}$ [e-/ph]",                    r"$\sigma_m$ [%]",                                  r"FoV [mas]"]           # params labels
         params_names_L = [r"Bandwidth central wavelength $\lambda_0$ [µm]",  r"Spectral coverage $\Delta\lambda$ [µm]",  r"Relative AO WFE $r_{\mathrm{WFE}}$", r"Coronagraph FPM radius [$\lambda_{0,\mathrm{band}}/D$]",  r"Instrumental transmission $\gamma_{instru}$",  rf"{residuals} residual amplitude $\sigma_m$ [%]",  r"Field of View [mas]"] # params detailed labels
 
-    # Keep the full parameter axes for independent population diagnostics.
-    population_axes   = [np.asarray(axis) for axis in params]
-    population_ranges = list(params_ranges)
-    population_priors = list(params_priors)
+    # Preparing parameter ranges for global and population plots
+    population_axes = params.copy()
+    plot_names      = ("R", "l0", "Dl", "r_WFE", "IWA", "trans_instru", "sigma_m", "FoV") if instru_type == "IFU" else ("l0", "Dl", "r_WFE", "IWA", "trans_instru", "sigma_m", "FoV")
+    plot_prepared   = {}
+    print("\nPlot parameter ranges:")
+    if instru_type == "imager" and R_plot is not None:
+        fyh.print_range("R", R_plot, warning="(WARNING: not used for imager)")
+    for i, (name, axis, prior) in enumerate(zip(plot_names, population_axes, params_priors)):
+        prepared            = fyh.prepare_population_axis(axis=axis, value=params_ranges[i], prior=prior, name=name, verbose=True)
+        plot_prepared[name] = prepared
+        used                = prepared[3]
+        params_ranges[i]    = (used, used) if prepared[2] else used
+    print()
     
     
 
@@ -1142,34 +1160,34 @@ def main():
             # Planet-type legend
             if ipanel ==2:
                 handles_ptype = [Line2D([], [], ls="", marker=marker_ptypes[ptype], ms=ms, markerfacecolor="white", markeredgewidth=1.5, color="k", label=f"{label_ptypes[ptype]}") for ipt, ptype in enumerate(ptypes)]
-                leg_ptype = ax.legend(handles=handles_ptype, fontsize='small', loc="upper left", frameon=True, edgecolor="gray", facecolor="white")#, title="Planet type", title_fontsize=fontsize + 4)
+                leg_ptype = ax.legend(handles=handles_ptype, fontsize=fontsize, loc="upper left", frameon=True, edgecolor="gray", facecolor="white")#, title="Planet type", title_fontsize=fontsize + 4)
                 ax.add_artist(leg_ptype)
 
             # Planet-regime legend
             if ipanel == 3 and light_regime_plot == "thermal+reflected":
                 handles_regime = [Line2D([], [], ls="-", lw=lw + 2, color="C3", label="Thermal"), Line2D([], [], ls="-", lw=lw + 2, color="C0", label="Reflected")]
-                leg_regime = ax.legend(handles=handles_regime, fontsize='small', loc="lower right", frameon=True, edgecolor="gray", facecolor="white")#, title="Planet-light regime", title_fontsize=fontsize + 4)
+                leg_regime = ax.legend(handles=handles_regime, fontsize=fontsize, loc="lower right", frameon=True, edgecolor="gray", facecolor="white")#, title="Planet-light regime", title_fontsize=fontsize + 4)
                 ax.add_artist(leg_regime)
 
             # Systematics budget with JWST/MIRI/MRS ~ 1%.
             if params_names[idim] == "sigma_m [%]" and post_processing == "MM":
                 x0 = 1.0 # [%]
                 ax.axvline(x0, c="k", ls="--", lw=lw)
-                ax.annotate("JWST/MIRI/MRS", xy=(x0, 0.5), xycoords=("data", "axes fraction"), xytext=(6, 0), textcoords="offset points", rotation=270, va="center", ha="left", fontsize='small', color="k", bbox=dict(boxstyle="round,pad=0.2", fc="white", ec="gray", alpha=0.85), zorder=5, clip_on=True)
+                ax.annotate("JWST/MIRI/MRS", xy=(x0, 0.5), xycoords=("data", "axes fraction"), xytext=(6, 0), textcoords="offset points", rotation=270, va="center", ha="left", fontsize=fontsize, color="k", bbox=dict(boxstyle="round,pad=0.2", fc="white", ec="gray", alpha=0.85), zorder=5, clip_on=True)
             if params_names[idim] == "sigma_m [%]" and post_processing == "DI":
                 x0 = 0.1  # [%] = 1e-3 in fractional units with VLT/SPHERE PACO
                 ax.axvline(x0, c="k", ls="--", lw=lw)
-                ax.annotate("Optimistic on-sky DI", xy=(x0, 0.5), xycoords=("data", "axes fraction"), xytext=(6, 0), textcoords="offset points", rotation=270, va="center", ha="left", fontsize='small', color="k", bbox=dict(boxstyle="round,pad=0.2", fc="white", ec="gray", alpha=0.85), zorder=5, clip_on=True)
+                ax.annotate("Optimistic on-sky DI", xy=(x0, 0.5), xycoords=("data", "axes fraction"), xytext=(6, 0), textcoords="offset points", rotation=270, va="center", ha="left", fontsize=fontsize, color="k", bbox=dict(boxstyle="round,pad=0.2", fc="white", ec="gray", alpha=0.85), zorder=5, clip_on=True)
 
             # r_WFE and IWA ref values
             if params_names[idim] == "r_WFE":
                 x0 = r_WFE_ref # [dimensionless]
                 ax.axvline(x0, c="k", ls="--", lw=lw)
-                ax.annotate("Nominal AO perf.", xy=(x0, 0.5), xycoords=("data", "axes fraction"), xytext=(6, 0), textcoords="offset points", rotation=270, va="center", ha="left", fontsize='small', color="k", bbox=dict(boxstyle="round,pad=0.2", fc="white", ec="gray", alpha=0.85), zorder=5, clip_on=True)
+                ax.annotate("Nominal AO perf.", xy=(x0, 0.5), xycoords=("data", "axes fraction"), xytext=(6, 0), textcoords="offset points", rotation=270, va="center", ha="left", fontsize=fontsize, color="k", bbox=dict(boxstyle="round,pad=0.2", fc="white", ec="gray", alpha=0.85), zorder=5, clip_on=True)
             if params_names[idim] == "IWA [lambda0/D]":
                 x0 = IWA_ref  # [lambda0_band/D]
                 ax.axvline(x0, c="k", ls="--", lw=lw)
-                ax.annotate("PCS nominal FPM", xy=(x0, 0.5), xycoords=("data", "axes fraction"), xytext=(6, 0), textcoords="offset points", rotation=270, va="center", ha="left", fontsize='small', color="k", bbox=dict(boxstyle="round,pad=0.2", fc="white", ec="gray", alpha=0.85), zorder=5, clip_on=True)
+                ax.annotate("PCS nominal FPM", xy=(x0, 0.5), xycoords=("data", "axes fraction"), xytext=(6, 0), textcoords="offset points", rotation=270, va="center", ha="left", fontsize=fontsize, color="k", bbox=dict(boxstyle="round,pad=0.2", fc="white", ec="gray", alpha=0.85), zorder=5, clip_on=True)
 
         # Turn off unused panels
         for k in range(Ndim, nrows * ncols):
@@ -1289,21 +1307,21 @@ def main():
                 if params_names[idim] == "sigma_m [%]" and post_processing == "MM":
                     x0 = 1.0 # [%]
                     ax.axvline(x0, c="k", ls="--", lw=lw)
-                    ax.annotate("JWST/MIRI/MRS", xy=(x0, 0.5), xycoords=("data", "axes fraction"), xytext=(6, 0), textcoords="offset points", rotation=270, va="center", ha="left", fontsize='small', color="k", bbox=dict(boxstyle="round,pad=0.2", fc="white", ec="gray", alpha=0.85), zorder=5, clip_on=True)
+                    ax.annotate("JWST/MIRI/MRS", xy=(x0, 0.5), xycoords=("data", "axes fraction"), xytext=(6, 0), textcoords="offset points", rotation=270, va="center", ha="left", fontsize=fontsize, color="k", bbox=dict(boxstyle="round,pad=0.2", fc="white", ec="gray", alpha=0.85), zorder=5, clip_on=True)
                 if params_names[idim] == "sigma_m [%]" and post_processing == "DI":
                     x0 = 0.1  # [%] = 1e-3 in fractional units with VLT/SPHERE PACO
                     ax.axvline(x0, c="k", ls="--", lw=lw)
-                    ax.annotate("Optimistic on-sky DI", xy=(x0, 0.5), xycoords=("data", "axes fraction"), xytext=(6, 0), textcoords="offset points", rotation=270, va="center", ha="left", fontsize='small', color="k", bbox=dict(boxstyle="round,pad=0.2", fc="white", ec="gray", alpha=0.85), zorder=5, clip_on=True)
+                    ax.annotate("Optimistic on-sky DI", xy=(x0, 0.5), xycoords=("data", "axes fraction"), xytext=(6, 0), textcoords="offset points", rotation=270, va="center", ha="left", fontsize=fontsize, color="k", bbox=dict(boxstyle="round,pad=0.2", fc="white", ec="gray", alpha=0.85), zorder=5, clip_on=True)
 
                 # r_WFE and IWA ref values
                 if params_names[idim] == "r_WFE":
                     x0 = r_WFE_ref # [dimensionless]
                     ax.axvline(x0, c="k", ls="--", lw=lw)
-                    ax.annotate("Nominal AO perf.", xy=(x0, 0.5), xycoords=("data", "axes fraction"), xytext=(6, 0), textcoords="offset points", rotation=270, va="center", ha="left", fontsize='small', color="k", bbox=dict(boxstyle="round,pad=0.2", fc="white", ec="gray", alpha=0.85), zorder=5, clip_on=True)
+                    ax.annotate("Nominal AO perf.", xy=(x0, 0.5), xycoords=("data", "axes fraction"), xytext=(6, 0), textcoords="offset points", rotation=270, va="center", ha="left", fontsize=fontsize, color="k", bbox=dict(boxstyle="round,pad=0.2", fc="white", ec="gray", alpha=0.85), zorder=5, clip_on=True)
                 if params_names[idim] == "IWA [lambda0/D]":
                     x0 = IWA_ref  # [lambda0_band/D]
                     ax.axvline(x0, c="k", ls="--", lw=lw)
-                    ax.annotate("PCS nominal FPM", xy=(x0, 0.5), xycoords=("data", "axes fraction"), xytext=(6, 0), textcoords="offset points", rotation=270, va="center", ha="left", fontsize='small', color="k", bbox=dict(boxstyle="round,pad=0.2", fc="white", ec="gray", alpha=0.85), zorder=5, clip_on=True)
+                    ax.annotate("PCS nominal FPM", xy=(x0, 0.5), xycoords=("data", "axes fraction"), xytext=(6, 0), textcoords="offset points", rotation=270, va="center", ha="left", fontsize=fontsize, color="k", bbox=dict(boxstyle="round,pad=0.2", fc="white", ec="gray", alpha=0.85), zorder=5, clip_on=True)
 
             # Turn off unused panels
             for k in range(Ndim, nrows * ncols):
@@ -1424,8 +1442,7 @@ def main():
     if plot_populations:
         # %%
         # POPULATION DIAGNOSTICS
-        population_parameters = {"R": R_plot, "l0": l0_plot, "Dl": Dl_plot, "r_WFE": r_WFE_plot, "IWA": IWA_plot, "trans_instru": trans_instru_plot, "sigma_m": sigma_m_plot, "FoV": FoV_plot}
-        population_results    = fyh.get_population_results(instru_type=instru_type, signal_planets=signal_planets, sigma_halo_2_planets=sigma_halo_2_planets, sigma_bkg_2_planets=sigma_bkg_2_planets, sigma_syst_base_2_planets=sigma_syst_base_2_planets, DIT_planets=DIT_planets, separation_planets=separation_planets, axes=population_axes, default_ranges=population_ranges, priors=population_priors, plot_parameters=population_parameters, detector_l0=detector_l0, RON0=RON0, RON_lim=RON_lim, DC0=DC0, min_DIT=min_DIT, is_UTR=is_UTR, exposure_time=exposure_time, A_FWHM=A_FWHM, valid_windows_3D=valid_windows_3D, nproc=nproc, chunksize=chunksize)
+        population_results    = fyh.get_population_results(instru_type=instru_type, signal_planets=signal_planets, sigma_halo_2_planets=sigma_halo_2_planets, sigma_bkg_2_planets=sigma_bkg_2_planets, sigma_syst_base_2_planets=sigma_syst_base_2_planets, DIT_planets=DIT_planets, separation_planets=separation_planets, axes=population_axes, prepared=plot_prepared, detector_l0=detector_l0, RON0=RON0, RON_lim=RON_lim, DC0=DC0, min_DIT=min_DIT, is_UTR=is_UTR, exposure_time=exposure_time, A_FWHM=A_FWHM, valid_windows_3D=valid_windows_3D, nproc=nproc, chunksize=chunksize)
         SNR_plot              = population_results["SNR"]
         dominant_noise        = population_results["dominant_noise"]
         dominant_noise[dominant_noise == "Systematics"] = str(residuals)

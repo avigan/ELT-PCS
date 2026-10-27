@@ -1217,13 +1217,13 @@ def print_range(key, value, used=None, warning=""):
 
 
 
-def prepare_population_axis(axis, value, default_range, prior, name, verbose=False):
+def prepare_population_axis(axis, value, prior, name, verbose=False):
     """
     Select interpolation or marginalization weights for a population parameter.
 
     Scalar     : fixed value, linearly interpolated between adjacent nodes.
     [min, max] : weighted marginalization over the requested interval.
-    None       : use the corresponding default parameter range.
+    None       : marginalize over the full simulated parameter range.
 
     Requests outside the explored range are cropped with a warning. A singleton
     axis is always fixed, independently of the requested value.
@@ -1241,18 +1241,17 @@ def prepare_population_axis(axis, value, default_range, prior, name, verbose=Fal
             print_range(name, value, f"{fixed_value:g}" if changed else None, f"(WARNING: parameter fixed at {fixed_value:g})")
         return np.array([0], dtype=int), np.array([1.0]), True, fixed_value
 
-    # Keep legacy behavior: malformed selections fall back to default ranges.
-    original = default_range if value is None else value
+    # None or invalid selections fall back to the full simulated axis.
+    original = (axis[0], axis[-1]) if value is None else value
     try:
         requested = np.asarray(original, dtype=float).ravel()
     except (TypeError, ValueError):
         requested = np.array([])
+    
     warning = ""
     if requested.size not in (1, 2) or not np.all(np.isfinite(requested)):
-        requested = np.asarray(default_range, dtype=float).ravel()
-        warning = "(WARNING: expected scalar or [min, max]; default used)"
-    if requested.size not in (1, 2) or not np.all(np.isfinite(requested)):
-        raise ValueError(f"Invalid default parameter range for {name}.")
+        requested = np.array([axis[0], axis[-1]], dtype=float)
+        warning   = "(WARNING: expected scalar or [min, max]; full axis used)"
     if requested.size == 1:
         requested = np.repeat(requested, 2)
     if requested[0] > requested[1]:
@@ -1368,17 +1367,10 @@ def process_population(idx):
 
 
 
-def get_population_results(instru_type, signal_planets, sigma_halo_2_planets, sigma_bkg_2_planets, sigma_syst_base_2_planets, DIT_planets, separation_planets, axes, default_ranges, priors, plot_parameters, detector_l0, RON0, RON_lim, DC0, min_DIT, is_UTR, exposure_time, A_FWHM, valid_windows_3D=None, nproc=None, chunksize=8):
+def get_population_results(instru_type, signal_planets, sigma_halo_2_planets, sigma_bkg_2_planets, sigma_syst_base_2_planets, DIT_planets, separation_planets, axes, prepared, detector_l0, RON0, RON_lim, DC0, min_DIT, is_UTR, exposure_time, A_FWHM, valid_windows_3D=None, nproc=None, chunksize=8):
     """Compute population diagnostics without building the full SNR hypercube."""
-    names          = ("R", "l0", "Dl", "r_WFE", "IWA", "trans_instru", "sigma_m", "FoV") if instru_type == "IFU" else ("l0", "Dl", "r_WFE", "IWA", "trans_instru", "sigma_m", "FoV")
-    axes           = dict(zip(names, axes))
-    default_ranges = dict(zip(names, default_ranges))
-    priors         = dict(zip(names, priors))
-    print("\nPopulation plot personalized ranges:")
-    if instru_type == "imager" and plot_parameters.get("R") is not None:
-        print_range("R", plot_parameters["R"], warning="(WARNING: not used for imager)")
-    prepared = {name: prepare_population_axis(axis=axes[name], value=plot_parameters.get(name), default_range=default_ranges[name], prior=priors[name], name=name, verbose=True) for name in names}
-    print()
+    names   = ("R", "l0", "Dl", "r_WFE", "IWA", "trans_instru", "sigma_m", "FoV") if instru_type == "IFU" else ("l0", "Dl", "r_WFE", "IWA", "trans_instru", "sigma_m", "FoV")
+    axes    = dict(zip(names, axes))
     indices = {name: prepared[name][0] for name in names}
     weights = {name: prepared[name][1] for name in names}
 
