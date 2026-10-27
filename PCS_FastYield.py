@@ -94,6 +94,7 @@ def main():
     concept_name       = "concept_A_highres_vis_ifu_band=VRIz"
     #concept_name       = "concept_Ab_highres_nir_ifu_band=zYJ"
     #concept_name       = "ifu_global"
+    #concept_name       = "imager_global"
     instrument_concept = fyh.load_instrument_concept(concept_name)
 
     # --- General parameters for the simulation ---
@@ -108,9 +109,9 @@ def main():
     reflected_model    = "auto"                                # Model for the albedo of the planet ("auto", "tellurics", "flat", "PICASO")
     instru_type        = instrument_concept['instru_type']     # Type of instrument ("IFU" or "imager")
     post_processing    = instrument_concept['postproc']        # Post-processing method ("MM" or "DI")
-    spatial_sampling   = 2                                     # [px/FWHM] Number of pixel per spatial FWHM along 1 direction (spatial_sampling >= 2 => Nyquist spatial sampling)
-    size_core          = 2                                     # Aperture size on which the signal is integrated [px]
-    A_FWHM             = size_core**2                          # Number of pixel per FWHM box area
+    spatial_sampling   = 2                                                       # [px/FWHM] Number of pixel per spatial FWHM along 1 direction (spatial_sampling >= 2 => Nyquist spatial sampling)
+    core_diameter_lD   = 2.4                                                     # [lambda/D] Diameter of the circular photometric aperture used to integrate the planetary signal
+    A_FWHM             = np.pi*(core_diameter_lD*spatial_sampling/(2*1.029))**2  # [px] Effective number of pixels within the circular aperture (FWHM = 1.029 lambda/D) <=> aperture size on which the signal is integrated [px]
     Rc                 = 1_00                                  # MM cut-off resolution (Rc~100 is enough to reach ~1e-8 with speckles only, Rc~1000 would allows to go further (more conservative))
     filter_type        = "gaussian_fast"                       # MM filter type
     table_type         = "Archive"                             # "Archive": for all known exoplanets | "Simulated": TODO
@@ -137,19 +138,6 @@ def main():
     plot_global_results = False
     plot_populations    = True
     
-    # Choose which planet population (thermal/reflected) to plot (defined in the 'band_plot').
-    # NB: if thermal_model = "None", light_regime_plot will be forced to be "reflected" (and vice versa)
-    light_regime_plot = "thermal+reflected" # 'thermal", "reflected" or "thermal+reflected"
-
-    # Band used for the contrast shown on the y-axis and for the light regime split (thermal/reflected)
-    band_plot = "I"
-
-    # Choose in wich space the planet populations are plotted
-    # "obs"  : observationnal space (contrast vs. angular separation)
-    # "phys" : physical space (mass vs. projected semi-major axis)
-    # "both" : combine the plots in two panels
-    planet_population_space = 'phys'
-
     # Definition of the standard photometric bands
     # band | l0   | dl
     # --------------------------
@@ -162,7 +150,10 @@ def main():
     # H    | 1.63 | 0.31
     # K    | 2.19 | 0.39
 
-    # Population plot parameters: scalar = fixed value, [min, max] = marginalized range, None = default params_ranges
+    # Plot parameters range: 
+    # scalar     = fixed value
+    # [min, max] = marginalized range
+    # None       = default params_ranges
     
     # VRIz
     R_plot            = 80_000           # [dimensionless]
@@ -174,9 +165,18 @@ def main():
     sigma_m_plot      = 0.01             # [%]
     FoV_plot          = 300              # [mas]
     
-    show_golden_sample = False
-    show_det_regions   = False
-    show_ptype_regions = False
+    # Choose which planet population (thermal/reflected) to plot (defined in the 'band_plot').
+    # NB: if thermal_model = "None", light_regime_plot will be forced to be "reflected" (and vice versa)
+    light_regime_plot = "thermal+reflected" # 'thermal", "reflected" or "thermal+reflected"
+
+    # Band used for the contrast shown on the y-axis and for the light regime split (thermal/reflected)
+    band_plot = "I"
+
+    # Choose in wich space the planet populations are plotted
+    # "obs"  : observationnal space (contrast vs. angular separation)
+    # "phys" : physical space (mass vs. projected semi-major axis)
+    # "both" : combine the plots in two panels
+    planet_population_space = 'phys'
 
     # --- IFU parameters space to explore ---
     if instru_type == "IFU":
@@ -345,7 +345,7 @@ def main():
         raise ValueError("No planets remain after the separation selection")
 
     # Prints simulation parameters
-    print_simulation_summary(instru=instru, instru_type=instru_type, detector=detector, post_processing=post_processing, D=D, S=S, N_mirror=N_mirror, trans_dust=trans_dust, RON0=RON0, RON_lim=RON_lim, DC0=DC0, saturation_e=saturation_e, min_DIT=min_DIT, max_DIT=max_DIT, coronagraph=coronagraph, apodizer=apodizer, strehl=strehl, thermal_model=thermal_model, reflected_model=reflected_model, SNR_thr=SNR_thr, exposure_time=exposure_time, size_core=size_core, A_FWHM=A_FWHM, Rc=Rc if instru_type == "IFU" else None, filter_type=filter_type if instru_type == "IFU" else None, table_type=table_type, sep_min=sep_min, sep_max=sep_max, N_PT_raw=N_PT_raw, N_PT=N_PT, force_new_calc=force_new_calc, l0=l0, R=R if instru_type == "IFU" else None, Dl=Dl, r_WFE=r_WFE, IWA=IWA, IWA_unit="λ/D", trans_instru=trans_instru, sigma_m=sigma_m, FoV=FoV)
+    print_simulation_summary(instru=instru, instru_type=instru_type, detector=detector, post_processing=post_processing, D=D, S=S, N_mirror=N_mirror, trans_dust=trans_dust, RON0=RON0, RON_lim=RON_lim, DC0=DC0, saturation_e=saturation_e, min_DIT=min_DIT, max_DIT=max_DIT, coronagraph=coronagraph, apodizer=apodizer, strehl=strehl, thermal_model=thermal_model, reflected_model=reflected_model, SNR_thr=SNR_thr, exposure_time=exposure_time, spatial_sampling=spatial_sampling, A_FWHM=A_FWHM, Rc=Rc if instru_type == "IFU" else None, filter_type=filter_type if instru_type == "IFU" else None, table_type=table_type, sep_min=sep_min, sep_max=sep_max, N_PT_raw=N_PT_raw, N_PT=N_PT, force_new_calc=force_new_calc, l0=l0, R=R if instru_type == "IFU" else None, Dl=Dl, r_WFE=r_WFE, IWA=IWA, IWA_unit="λ/D", trans_instru=trans_instru, sigma_m=sigma_m, FoV=FoV)
 
     # The shared legacy summary helper calls its argument 'WFE'; it receives r_WFE
     # for API compatibility. Its WFE/IWA unit annotations are NOT authoritative here.
@@ -365,7 +365,7 @@ def main():
                 RON0=RON0, RON_lim=RON_lim, DC0=DC0, saturation_e=saturation_e, min_DIT=min_DIT, max_DIT=max_DIT,
 
                 # science / pipeline
-                coronagraph=coronagraph, apodizer=apodizer, band_WFS=band_WFS, strehl=strehl, thermal_model=thermal_model, reflected_model=reflected_model, instru_type=instru_type, post_processing=post_processing, size_core=size_core, R_model=R_model, table_type=table_type,
+                coronagraph=coronagraph, apodizer=apodizer, band_WFS=band_WFS, strehl=strehl, thermal_model=thermal_model, reflected_model=reflected_model, instru_type=instru_type, post_processing=post_processing, A_FWHM=A_FWHM, R_model=R_model, table_type=table_type,
 
                 # exploration space
                 l0_min=l0_min, l0_max=l0_max, r_WFE_min=r_WFE_min, r_WFE_max=r_WFE_max, IWA_min=IWA_min, IWA_max=IWA_max, trans_instru_min=trans_instru_min, trans_instru_max=trans_instru_max, sep_min=sep_min, sep_max=sep_max, N_PT=N_PT,
@@ -716,8 +716,8 @@ def main():
             scale_spectrum *= S * 60 * dl_instru       # [ph/s/m2/µm] => [ph/mn/bin]
 
             # Preparing for bandwidth range for each point
-            l0_2D  = l0[:, None]        # [µm] (l0, 1)
-            Dl_2D  = Dl[None, :]        # [µm] (1, Dl)
+            l0_2D     = l0[:, None]     # [µm] (l0, 1)
+            Dl_2D     = Dl[None, :]     # [µm] (1, Dl)
             l0_2D_min = l0_2D - Dl_2D/2 # [µm] (l0, Dl)
             l0_2D_max = l0_2D + Dl_2D/2 # [µm] (l0, Dl)
 
@@ -1186,8 +1186,8 @@ def main():
 
         # Title
         quantity_name = "detection probability gain" if gain else "detection yield"
-        title  = f"ELT/{instru} {quantity_name} in {exposure_time/60:.0f}hr - {instru_type} with {post_processing}"
-        title += f"\n{N_PT} {table_type.replace('Archive', 'known').replace('Simulated', 'simulated')} planets"
+        title         = f"ELT/{instru} {quantity_name} in {exposure_time/60:.0f}hr - {instru_type} with {post_processing}"
+        title        += f"\n{N_PT} {table_type.replace('Archive', 'known').replace('Simulated', 'simulated')} planets"
         fig.suptitle(title, fontsize=fontsize + 6, weight="bold", y=1.00, linespacing=1.6)
         fig.tight_layout(h_pad=3.0, w_pad=3.0)
         fig.savefig(sim_dir_concept / f"ELT_{instru}_{instru_type}_{post_processing}_detection_{table_type}_{light_regime_plot}_Pdet.png", bbox_inches="tight", dpi=dpi_fig)
@@ -1430,7 +1430,8 @@ def main():
         dominant_noise        = population_results["dominant_noise"]
         dominant_noise[dominant_noise == "Systematics"] = str(residuals)
 
-        yield_population_plot(table=table_type, instru=instru, instru_type=instru_type, post_processing=post_processing, thermal_model=thermal_model, reflected_model=reflected_model, exposure_time=exposure_time, band_contrast_plot=band_plot, band_regime_plot=band_plot, planet_table=planet_table, SNR_plot=SNR_plot, dominant_noise=dominant_noise, SNR_thr=SNR_thr, save_dir=sim_dir_concept, DL_mas=np.nan, show_golden_sample=show_golden_sample, show_det_regions=show_det_regions, show_ptype_regions=show_ptype_regions, space=planet_population_space)
+        yield_population_plot(table=table_type, instru=instru, instru_type=instru_type, post_processing=post_processing, thermal_model=thermal_model, reflected_model=reflected_model, exposure_time=exposure_time, band_contrast_plot=band_plot, band_regime_plot=band_plot, planet_table=planet_table, SNR_plot=SNR_plot, dominant_noise=dominant_noise, SNR_thr=SNR_thr, save_dir=sim_dir_concept, DL_mas=np.nan, show_golden_sample=False, show_det_regions=False, show_ptype_regions=False, space=planet_population_space)
+
 
 
     # %%
