@@ -8,12 +8,14 @@ os.environ["NUMBA_NUM_THREADS"]    = "1"
 # import FastYield modules
 # import fastyield.config as config
 # config.dpi_fig = 72
-
 from fastyield.config import rad2arcsec, h, c, R0_min, R0_max, lmin_bands, lmax_bands, archive_path, simulated_path, get_sim_data_path, dpi_fig
 from fastyield.get_specs import load_tell_trans, get_detector_specs
 from fastyield.FastYield import load_planet_table, get_mask_planet_type, yield_population_plot, yield_heatmap_ELT
-from fastyield.FastYield_helpers import print_simulation_summary, make_suffix, write_meta, memmap_nbytes, format_nbytes, create_memmap_with_log
+from fastyield.FastYield_helpers import print_simulation_summary, make_suffix, write_meta, memmap_nbytes, format_nbytes, create_memmap_with_log, warmup_signal_noise_numba
 from fastyield.spectrum import get_wavelength_axis_constant_R, Spectrum, load_vega_spectrum, get_spectrum_contribution_name_model, get_wave_K, get_counts_from_density
+
+# import PCS package helpers module
+import PCS_FastYield_helpers as fyh
 
 # import astropy modules
 from astropy.io import fits
@@ -39,7 +41,6 @@ from pathlib import Path
 import sys
 import gc
 
-import PCS_FastYield_helpers as fyh
 
 
 # Parameters for multiprocessing
@@ -304,13 +305,14 @@ def main():
         detector_l0 = np.where(l0 < 0.80, "EMCCD", "SAPHIRA")
     else:
         raise ValueError("detector must be 'constant_H4RG', 'PCS_visNIR_conservative', 'PCS_low_noise_visNIR', or 'PCS_NIR_APD_optimistic'.")
-    spec_dict = {name: get_detector_specs(name) for name in np.unique(detector_l0)}
-    RON0         = np.array([spec_dict[d]["RON0"]         for d in detector_l0], dtype=dtype)
-    RON_lim      = np.array([spec_dict[d]["RON_lim"]      for d in detector_l0], dtype=dtype)
-    DC0          = np.array([spec_dict[d]["DC0"]          for d in detector_l0], dtype=dtype)
-    saturation_e = np.array([spec_dict[d]["saturation_e"] for d in detector_l0], dtype=dtype)
-    min_DIT      = np.array([spec_dict[d]["min_DIT"]      for d in detector_l0], dtype=dtype)
-    max_DIT      = np.array([spec_dict[d]["max_DIT"]      for d in detector_l0], dtype=dtype)
+    spec_dict    = {name: get_detector_specs(name) for name in np.unique(detector_l0)}
+    RON0         = np.array([spec_dict[d]["RON0"]                    for d in detector_l0], dtype=dtype)
+    RON_lim      = np.array([spec_dict[d]["RON_lim"]                 for d in detector_l0], dtype=dtype)
+    DC0          = np.array([spec_dict[d]["DC0"]                     for d in detector_l0], dtype=dtype)
+    saturation_e = np.array([spec_dict[d]["saturation_e"]            for d in detector_l0], dtype=dtype)
+    min_DIT      = np.array([spec_dict[d]["min_DIT"]                 for d in detector_l0], dtype=dtype)
+    max_DIT      = np.array([spec_dict[d]["max_DIT"]                 for d in detector_l0], dtype=dtype)
+    is_UTR       = np.array([spec_dict[d]["family"] == "HgCdTe_HxRG" for d in detector_l0], dtype=bool)
 
     # --- Pixel scales (assuming Nyquist sampling) ---
     l0D          = l0*1e-6 / D * 1000*rad2arcsec  # lambda/D [mas/(lambda/D)]
@@ -785,7 +787,7 @@ def main():
 
         # Warmup for systematics in IFU
         if instru_type == "IFU":
-            fyh.warmup_signal_noise_numba(dtype=dtype)
+            warmup_signal_noise_numba(dtype=dtype)
 
         # Computations
         print()
@@ -847,7 +849,7 @@ def main():
     # Computing the SNR and detection mask (SNR > SNR_thr) for each planet
     # For IFU (8D):    (planets, R, l0, Dl, r_WFE, IWA, trans_instru, sigma_m)
     # For Imager (7D): (planets,    l0, Dl, r_WFE, IWA, trans_instru, sigma_m)
-    SNR_planets     = fyh.get_SNR(instru=instru, instru_type=instru_type, post_processing=post_processing, exposure_time=exposure_time, min_DIT=min_DIT, RON0=RON0, RON_lim=RON_lim, DC0=DC0, A_FWHM=A_FWHM, Rc=Rc, filter_type=filter_type, signal_planets=signal_planets, sigma_halo_2_planets=sigma_halo_2_planets, sigma_bkg_2_planets=sigma_bkg_2_planets, sigma_syst_base_2_planets=sigma_syst_base_2_planets, DIT_planets=DIT_planets, R=R if instru_type == "IFU" else None, Dl=Dl if instru_type == "IFU" else None, sigma_m=sigma_m, sim_dir=sim_dir_concept, suffix=suffix, dtype=dtype)
+    SNR_planets     = fyh.get_SNR(instru=instru, instru_type=instru_type, post_processing=post_processing, exposure_time=exposure_time, min_DIT=min_DIT, RON0=RON0, RON_lim=RON_lim, is_UTR=is_UTR, DC0=DC0, A_FWHM=A_FWHM, Rc=Rc, filter_type=filter_type, signal_planets=signal_planets, sigma_halo_2_planets=sigma_halo_2_planets, sigma_bkg_2_planets=sigma_bkg_2_planets, sigma_syst_base_2_planets=sigma_syst_base_2_planets, DIT_planets=DIT_planets, R=R if instru_type == "IFU" else None, Dl=Dl if instru_type == "IFU" else None, sigma_m=sigma_m, sim_dir=sim_dir_concept, suffix=suffix, dtype=dtype)
     mask_detections = fyh.get_mask_detections(SNR_planets=SNR_planets, SNR_thr=SNR_thr, sim_dir=sim_dir_concept, suffix=suffix)
 
     # Precompute FoV gating once
