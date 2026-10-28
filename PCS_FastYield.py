@@ -93,6 +93,7 @@ def main():
     concept_name       = "concept_A_highres_vis_ifu_band=VRIz"
     # concept_name       = "concept_Ab_highres_nir_ifu_band=zYJ"
     # concept_name       = "ifu_global"
+    # concept_name       = "concept_B_medres_nir_ifu"
     instrument_concept = fyh.load_instrument_concept(concept_name)
 
     # --- General parameters for the simulation ---
@@ -147,7 +148,7 @@ def main():
     # "obs"  : observationnal space (contrast vs. angular separation)
     # "phys" : physical space (mass vs. projected semi-major axis)
     # "both" : combine the plots in two panels
-    planet_population_space = 'obs'
+    planet_population_space = 'phys'
 
     # Choose how the detection status is defined for population plots.
     # "max"          : use the SNR at the global maximum of the Pdet hypercube.
@@ -177,9 +178,9 @@ def main():
     IWA_plot          = IWA_ref          # [lambda0_band/D]
     trans_instru_plot = 0.25             # [e-/ph]
     sigma_m_plot      = 0.01             # [%]
-    FoV_plot          = 300              # [mas]
+    FoV_plot          = 1000              # [mas]
 
-    show_golden_sample = False
+    show_golden_sample = True
     show_det_regions   = False
     show_ptype_regions = False
 
