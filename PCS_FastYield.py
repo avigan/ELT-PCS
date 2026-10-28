@@ -112,7 +112,7 @@ def main():
     spatial_sampling   = 2                                                       # [px/FWHM] Number of pixel per spatial FWHM along 1 direction (spatial_sampling >= 2 => Nyquist spatial sampling)
     core_diameter_lD   = 2.4                                                     # [lambda/D] Diameter of the circular photometric aperture used to integrate the planetary signal
     A_FWHM             = np.pi*(core_diameter_lD*spatial_sampling/(2*1.029))**2  # [px] Effective number of pixels within the circular aperture (FWHM = 1.029 lambda/D) <=> aperture size on which the signal is integrated [px]
-    Rc                 = 1_00                                  # MM cut-off resolution (Rc~100 is enough to reach ~1e-8 with speckles only, Rc~1000 would allows to go further (more conservative))
+    Rc                 = 1_000                                 # MM cut-off resolution (Rc~100 is enough to reach ~1e-8 with speckles only, Rc~1000 would allows to go further (more conservative))
     filter_type        = "gaussian_fast"                       # MM filter type
     table_type         = "Archive"                             # "Archive": for all known exoplanets | "Simulated": TODO
 
@@ -165,6 +165,7 @@ def main():
     sigma_m_plot      = 0.01             # [%]
     FoV_plot          = 300              # [mas]
     
+    # Full range
     # R_plot            = None           # [dimensionless]
     # l0_plot           = None           # [µm]
     # Dl_plot           = None           # [µm]
