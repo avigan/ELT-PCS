@@ -94,9 +94,6 @@ raw_wave_step = 0.1 # [um]
 # Used only as an external comparison diagnostic (not as an AO calibration).
 STREHL_REFERENCE_MODE = "CLC" # CLC is less aggressively apodized than APLC
 
-# AO simulation magnitude convention.
-PSF_MAG_BAND = "V"
-
 # PCS coronagraphic mask prescription from the updated simulation information.
 # Each wavelength uses the FPM associated with its broad photometric band:
 #     IWA_nominal(lambda) = FPM_LAMD * lambda0_band / D.

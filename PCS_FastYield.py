@@ -8,12 +8,14 @@ os.environ["NUMBA_NUM_THREADS"]    = "1"
 # import FastYield modules
 # import fastyield.config as config
 # config.dpi_fig = 72
-
-from fastyield.config import rad2arcsec, h, c, R0_min, R0_max, lmin_bands, lmax_bands, archive_path, simulated_path, get_sim_data_path, dpi_fig
+from fastyield.config import rad2arcsec, h, c, R0_min, R0_max, lmin_bands, lmax_bands, get_sim_data_path, dpi_fig
 from fastyield.get_specs import load_tell_trans, get_detector_specs
 from fastyield.FastYield import load_planet_table, get_mask_planet_type, yield_population_plot, yield_heatmap_ELT
-from fastyield.FastYield_helpers import print_simulation_summary, make_suffix, write_meta, memmap_nbytes, format_nbytes, create_memmap_with_log
+from fastyield.FastYield_helpers import print_simulation_summary, make_suffix, write_meta, memmap_nbytes, format_nbytes, create_memmap_with_log, warmup_signal_noise_numba, get_valid_IFU_windows
 from fastyield.spectrum import get_wavelength_axis_constant_R, Spectrum, load_vega_spectrum, get_spectrum_contribution_name_model, get_wave_K, get_counts_from_density
+
+# import PCS package helpers module
+import PCS_FastYield_helpers as fyh
 
 # import astropy modules
 from astropy.io import fits
@@ -23,7 +25,7 @@ import numpy as np
 
 # import matplotlib modules
 import matplotlib.pyplot as plt
-from matplotlib.ticker import LogLocator, NullFormatter, AutoMinorLocator, FixedLocator, FuncFormatter, NullLocator
+from matplotlib.ticker import LogLocator, NullFormatter, AutoMinorLocator
 from matplotlib.lines import Line2D
 import matplotlib as mpl
 
@@ -39,7 +41,6 @@ from pathlib import Path
 import sys
 import gc
 
-import PCS_FastYield_helpers as fyh
 
 
 # Parameters for multiprocessing
@@ -108,10 +109,10 @@ def main():
     reflected_model    = "auto"                                # Model for the albedo of the planet ("auto", "tellurics", "flat", "PICASO")
     instru_type        = instrument_concept['instru_type']     # Type of instrument ("IFU" or "imager")
     post_processing    = instrument_concept['postproc']        # Post-processing method ("MM" or "DI")
-    spatial_sampling   = 2                                     # [px/FWHM] Number of pixel per spatial FWHM along 1 direction (spatial_sampling >= 2 => Nyquist spatial sampling)
-    size_core          = 2                                     # Aperture size on which the signal is integrated [px]
-    A_FWHM             = size_core**2                          # Number of pixel per FWHM box area
-    Rc                 = 1_00                                  # MM cut-off resolution (Rc~100 is enough to reach ~1e-8 with speckles only, Rc~1000 would allows to go further (more conservative))
+    spatial_sampling   = 2                                                       # [px/FWHM] Number of pixel per spatial FWHM along 1 direction (spatial_sampling >= 2 => Nyquist spatial sampling)
+    core_diameter_lD   = 2.4                                                     # [lambda/D] Diameter of the circular photometric aperture used to integrate the planetary signal
+    A_FWHM             = np.pi*(core_diameter_lD*spatial_sampling/(2*1.029))**2  # [px] Effective number of pixels within the circular aperture (FWHM = 1.029 lambda/D) <=> aperture size on which the signal is integrated [px]
+    Rc                 = 1_000                                 # MM cut-off resolution (Rc~100 is enough to reach ~1e-8 with speckles only, Rc~1000 would allows to go further (more conservative))
     filter_type        = "gaussian_fast"                       # MM filter type
     table_type         = "Archive"                             # "Archive": for all known exoplanets | "Simulated": TODO
 
@@ -134,27 +135,8 @@ def main():
     # IWA_min, IWA_max     = 1.0, 5.0
 
     # --- Plots configuration ---
-    plot_global_results = False
+    plot_global_results = True
     plot_populations    = True
-
-    # Choose which planet population (thermal/reflected) to plot (defined in the 'band_plot').
-    # NB: if thermal_model = "None", light_regime_plot will be forced to be "reflected" (and vice versa)
-    light_regime_plot = "thermal+reflected" # 'thermal", "reflected" or "thermal+reflected"
-
-    # Band used for the contrast shown on the y-axis and for the light regime split (thermal/reflected)
-    band_plot = "I"
-
-    # Choose in wich space the planet populations are plotted
-    # "obs"  : observationnal space (contrast vs. angular separation)
-    # "phys" : physical space (mass vs. projected semi-major axis)
-    # "both" : combine the plots in two panels
-    planet_population_space = 'phys'
-
-    # Choose how the detection status is defined for population plots.
-    # "max"          : use the SNR at the global maximum of the Pdet hypercube.
-    # "marginalized" : use the default params_ranges.
-    # "personalized" : use custom parameter ranges defined below.
-    snr_population_mode = "personalized"
 
     # Definition of the standard photometric bands
     # band | l0   | dl
@@ -168,7 +150,10 @@ def main():
     # H    | 1.63 | 0.31
     # K    | 2.19 | 0.39
 
-    # Personalized ranges: scalar = fixed value, [min,max] = marginalized range, None = keep default params_ranges
+    # --- Plot parameter ranges (used for global and population plots) ---
+    # scalar     = fixed value (interpolated if necessary)
+    # [min, max] = marginalized range (weighted average)
+    # None       = full simulated parameter range [min, max]
 
     # VRIz
     R_plot            = 80_000           # [dimensionless]
@@ -178,11 +163,30 @@ def main():
     IWA_plot          = IWA_ref          # [lambda0_band/D]
     trans_instru_plot = 0.25             # [e-/ph]
     sigma_m_plot      = 0.01             # [%]
-    FoV_plot          = 1000              # [mas]
+    FoV_plot          = 300              # [mas]
 
-    show_golden_sample = True
-    show_det_regions   = False
-    show_ptype_regions = False
+    # Full range
+    # R_plot            = None           # [dimensionless]
+    # l0_plot           = None           # [µm]
+    # Dl_plot           = None           # [µm]
+    # r_WFE_plot        = None           # [dimensionless]
+    # IWA_plot          = None           # [lambda0_band/D]
+    # trans_instru_plot = None           # [e-/ph]
+    # sigma_m_plot      = None           # [%]
+    # FoV_plot          = None           # [mas]
+
+    # Choose which planet population (thermal/reflected) to plot (defined in the 'band_plot').
+    # NB: if thermal_model = "None", light_regime_plot will be forced to be "reflected" (and vice versa)
+    light_regime_plot = "thermal+reflected" # 'thermal", "reflected" or "thermal+reflected"
+
+    # Band used for the contrast shown on the y-axis and for the light regime split (thermal/reflected)
+    band_plot = "I"
+
+    # Choose in wich space the planet populations are plotted
+    # "obs"  : observationnal space (contrast vs. angular separation)
+    # "phys" : physical space (mass vs. projected semi-major axis)
+    # "both" : combine the plots in two panels
+    planet_population_space = 'phys'
 
     # --- IFU parameters space to explore ---
     if instru_type == "IFU":
@@ -305,13 +309,14 @@ def main():
         detector_l0 = np.where(l0 < 0.80, "EMCCD", "SAPHIRA")
     else:
         raise ValueError("detector must be 'constant_H4RG', 'PCS_visNIR_conservative', 'PCS_low_noise_visNIR', or 'PCS_NIR_APD_optimistic'.")
-    spec_dict = {name: get_detector_specs(name) for name in np.unique(detector_l0)}
-    RON0         = np.array([spec_dict[d]["RON0"]         for d in detector_l0], dtype=dtype)
-    RON_lim      = np.array([spec_dict[d]["RON_lim"]      for d in detector_l0], dtype=dtype)
-    DC0          = np.array([spec_dict[d]["DC0"]          for d in detector_l0], dtype=dtype)
-    saturation_e = np.array([spec_dict[d]["saturation_e"] for d in detector_l0], dtype=dtype)
-    min_DIT      = np.array([spec_dict[d]["min_DIT"]      for d in detector_l0], dtype=dtype)
-    max_DIT      = np.array([spec_dict[d]["max_DIT"]      for d in detector_l0], dtype=dtype)
+    spec_dict    = {name: get_detector_specs(name) for name in np.unique(detector_l0)}
+    RON0         = np.array([spec_dict[d]["RON0"]                    for d in detector_l0], dtype=dtype)
+    RON_lim      = np.array([spec_dict[d]["RON_lim"]                 for d in detector_l0], dtype=dtype)
+    DC0          = np.array([spec_dict[d]["DC0"]                     for d in detector_l0], dtype=dtype)
+    saturation_e = np.array([spec_dict[d]["saturation_e"]            for d in detector_l0], dtype=dtype)
+    min_DIT      = np.array([spec_dict[d]["min_DIT"]                 for d in detector_l0], dtype=dtype)
+    max_DIT      = np.array([spec_dict[d]["max_DIT"]                 for d in detector_l0], dtype=dtype)
+    is_UTR       = np.array([spec_dict[d]["family"] == "HgCdTe_HxRG" for d in detector_l0], dtype=bool)
 
     # --- Pixel scales (assuming Nyquist sampling) ---
     l0D          = l0*1e-6 / D * 1000*rad2arcsec  # lambda/D [mas/(lambda/D)]
@@ -327,7 +332,7 @@ def main():
 
     # Valid spectral format windows
     if instru_type == "IFU":
-        valid_windows_3D = fyh.get_valid_IFU_windows(R=R, l0=l0, Dl=Dl, Nl_max=Nl_max)
+        valid_windows_3D = get_valid_IFU_windows(R=R, l0=l0, Dl=Dl, Nl_max=Nl_max)
         if not np.any(valid_windows_3D):
             raise ValueError("No valid IFU configurations with the requested Nl_max.")
     else:
@@ -350,16 +355,15 @@ def main():
         raise ValueError("No planets remain after the separation selection")
 
     # Prints simulation parameters
-    print_simulation_summary(instru=instru, instru_type=instru_type, detector=detector, post_processing=post_processing, D=D, S=S, N_mirror=N_mirror, trans_dust=trans_dust, RON0=RON0, RON_lim=RON_lim, DC0=DC0, saturation_e=saturation_e, min_DIT=min_DIT, max_DIT=max_DIT, coronagraph=coronagraph, apodizer=apodizer, strehl=strehl, thermal_model=thermal_model, reflected_model=reflected_model, SNR_thr=SNR_thr, exposure_time=exposure_time, size_core=size_core, A_FWHM=A_FWHM, Rc=Rc if instru_type == "IFU" else None, filter_type=filter_type if instru_type == "IFU" else None, table_type=table_type, sep_min=sep_min, sep_max=sep_max, N_PT_raw=N_PT_raw, N_PT=N_PT, force_new_calc=force_new_calc, l0=l0, R=R if instru_type == "IFU" else None, Dl=Dl, WFE=r_WFE, IWA=IWA, trans_instru=trans_instru, sigma_m=sigma_m, FoV=FoV)
+    print_simulation_summary(instru=instru, instru_type=instru_type, detector=detector, post_processing=post_processing, D=D, S=S, N_mirror=N_mirror, trans_dust=trans_dust, RON0=RON0, RON_lim=RON_lim, DC0=DC0, saturation_e=saturation_e, min_DIT=min_DIT, max_DIT=max_DIT, coronagraph=coronagraph, apodizer=apodizer, strehl=strehl, thermal_model=thermal_model, reflected_model=reflected_model, SNR_thr=SNR_thr, exposure_time=exposure_time, spatial_sampling=spatial_sampling, A_FWHM=A_FWHM, Rc=Rc if instru_type == "IFU" else None, filter_type=filter_type if instru_type == "IFU" else None, table_type=table_type, sep_min=sep_min, sep_max=sep_max, N_PT_raw=N_PT_raw, N_PT=N_PT, force_new_calc=force_new_calc, l0=l0, R=R if instru_type == "IFU" else None, Dl=Dl, r_WFE=r_WFE, IWA=IWA, IWA_unit="λ/D", trans_instru=trans_instru, sigma_m=sigma_m, FoV=FoV)
 
     # The shared legacy summary helper calls its argument 'WFE'; it receives r_WFE
     # for API compatibility. Its WFE/IWA unit annotations are NOT authoritative here.
     mag_check   = np.array([fyh.get_star_mag(planet, band_WFS) for planet in planet_table], dtype=float)
     outside_mag = (mag_check < 0.0) | (mag_check > 10.0)
     if np.any(outside_mag):
-        print(f"WARNING: {np.count_nonzero(outside_mag)} stars are outside the simulated {band_WFS}=[0,10] magnitude range; PSF interpolation will clamp to the nearest boundary.")
+        print(f"\nWARNING: {np.count_nonzero(outside_mag)} stars are outside the simulated {band_WFS}=[0,10] magnitude range; PSF interpolation will clamp to the nearest boundary.")
     print(f"\nPCS stellar {band_WFS}-band photometry: [{mag_check.min():.2f}, {mag_check.max():.2f}] mag")
-    print(f"\nPCS PSF axes (authoritative): r_WFE={r_WFE} [dimensionless]; IWA={IWA} [lambda0_band/D]; mag_star=stellar {band_WFS}-band magnitude")
 
     # Build meta for YOUR case (IFU or imager)
     meta = dict(code_version=PCS_CODE_VERSION, dtype=str(dtype),
@@ -371,7 +375,7 @@ def main():
                 RON0=RON0, RON_lim=RON_lim, DC0=DC0, saturation_e=saturation_e, min_DIT=min_DIT, max_DIT=max_DIT,
 
                 # science / pipeline
-                coronagraph=coronagraph, apodizer=apodizer, band_WFS=band_WFS, strehl=strehl, thermal_model=thermal_model, reflected_model=reflected_model, instru_type=instru_type, post_processing=post_processing, size_core=size_core, R_model=R_model, table_type=table_type,
+                coronagraph=coronagraph, apodizer=apodizer, band_WFS=band_WFS, strehl=strehl, thermal_model=thermal_model, reflected_model=reflected_model, instru_type=instru_type, post_processing=post_processing, A_FWHM=A_FWHM, R_model=R_model, table_type=table_type,
 
                 # exploration space
                 l0_min=l0_min, l0_max=l0_max, r_WFE_min=r_WFE_min, r_WFE_max=r_WFE_max, IWA_min=IWA_min, IWA_max=IWA_max, trans_instru_min=trans_instru_min, trans_instru_max=trans_instru_max, sep_min=sep_min, sep_max=sep_max, N_PT=N_PT,
@@ -722,8 +726,8 @@ def main():
             scale_spectrum *= S * 60 * dl_instru       # [ph/s/m2/µm] => [ph/mn/bin]
 
             # Preparing for bandwidth range for each point
-            l0_2D  = l0[:, None]        # [µm] (l0, 1)
-            Dl_2D  = Dl[None, :]        # [µm] (1, Dl)
+            l0_2D     = l0[:, None]     # [µm] (l0, 1)
+            Dl_2D     = Dl[None, :]     # [µm] (1, Dl)
             l0_2D_min = l0_2D - Dl_2D/2 # [µm] (l0, Dl)
             l0_2D_max = l0_2D + Dl_2D/2 # [µm] (l0, Dl)
 
@@ -786,7 +790,7 @@ def main():
 
         # Warmup for systematics in IFU
         if instru_type == "IFU":
-            fyh.warmup_signal_noise_numba(dtype=dtype)
+            warmup_signal_noise_numba(dtype=dtype)
 
         # Computations
         print()
@@ -822,7 +826,7 @@ def main():
     # Define parameters and their names
     if instru_type == "IFU":
         params         = [R,                           l0,                                                Dl,                                           r_WFE,                                 IWA,                                                       trans_instru,                                    100*sigma_m,                                        FoV]                     # params axis
-        params_ranges  = [(R.min(), R.max()),          (l0.min(), l0.max()),                              (Dl.min(), Dl.max()),                         (r_WFE_ref, r_WFE_ref),                (IWA_ref, IWA_ref),                                        (trans_instru.min(), trans_instru.max()),        ((100*sigma_m).min(), (100*sigma_m).min()),         (FoV.max(), FoV.max())]  # params ranges for marginalization
+        params_ranges  = [R_plot,                      l0_plot,                                           Dl_plot,                                      r_WFE_plot,                            IWA_plot,                                                  trans_instru_plot,                               sigma_m_plot,                                       FoV_plot]                # Plot parameter selections (scalar, range or None)
         params_priors  = ["log-uniform",               "uniform",                                         "uniform",                                    "uniform",                             "log-uniform",                                             "uniform",                                       "log-uniform",                                      "log-uniform"]           # params priors for marginalization
         params_islog   = [True,                        False,                                             False,                                        False,                                 True,                                                      False,                                           True,                                               True]                    # params space (linspace or logspace)
         params_isint   = [True,                        False,                                             False,                                        False,                                 False,                                                     False,                                           False,                                              True]                    # params rounded format
@@ -832,7 +836,7 @@ def main():
 
     elif instru_type == "imager":
         params         = [l0,                                                Dl,                                         r_WFE,                                 IWA,                                                        trans_instru,                                    100*sigma_m,                                        FoV]                    # params axis
-        params_ranges  = [(l0.min(), l0.max()),                              (Dl.min(), Dl.max()),                       (r_WFE_ref, r_WFE_ref),                (IWA_ref, IWA_ref),                                         (trans_instru.min(), trans_instru.max()),        ((100*sigma_m).min(), (100*sigma_m).min()),         (FoV.max(), FoV.max())] # params ranges for marginalization
+        params_ranges  = [l0_plot,                                           Dl_plot,                                    r_WFE_plot,                            IWA_plot,                                                   trans_instru_plot,                               sigma_m_plot,                                       FoV_plot]               # Plot parameter selections (scalar, range or None)
         params_priors  = ["uniform",                                         "uniform",                                  "uniform",                             "log-uniform",                                              "uniform",                                       "log-uniform",                                      "log-uniform"]          # params priors for marginalization
         params_islog   = [False,                                             False,                                      False,                                 True,                                                       False,                                           True,                                               True]                   # params space (linspace or logspace)
         params_isint   = [False,                                             False,                                      False,                                 False,                                                      False,                                           False,                                              False]                  # params rounded format
@@ -840,65 +844,76 @@ def main():
         params_names_l = [r"$\lambda_0$ [µm]",                               r"$\Delta\lambda$ [µm]",                    r"$r_{\mathrm{WFE}}$",                 r"$IWA$ [$\lambda_{0,\mathrm{band}}/D$]",                   r"$\gamma_{instru}$ [e-/ph]",                    r"$\sigma_m$ [%]",                                  r"FoV [mas]"]           # params labels
         params_names_L = [r"Bandwidth central wavelength $\lambda_0$ [µm]",  r"Spectral coverage $\Delta\lambda$ [µm]",  r"Relative AO WFE $r_{\mathrm{WFE}}$", r"Coronagraph FPM radius [$\lambda_{0,\mathrm{band}}/D$]",  r"Instrumental transmission $\gamma_{instru}$",  rf"{residuals} residual amplitude $\sigma_m$ [%]",  r"Field of View [mas]"] # params detailed labels
 
+    # Preparing parameter ranges for global and population plots
+    population_axes = params.copy()
+    plot_names      = ("R", "l0", "Dl", "r_WFE", "IWA", "trans_instru", "sigma_m", "FoV") if instru_type == "IFU" else ("l0", "Dl", "r_WFE", "IWA", "trans_instru", "sigma_m", "FoV")
+    plot_prepared   = {}
+    print("\nPlot parameter ranges:")
+    if instru_type == "imager" and R_plot is not None:
+        fyh.print_range("R", R_plot, warning="(WARNING: not used for imager)")
+    for i, (name, axis, prior) in enumerate(zip(plot_names, population_axes, params_priors)):
+        prepared            = fyh.prepare_population_axis(axis=axis, value=params_ranges[i], prior=prior, name=name, verbose=True)
+        plot_prepared[name] = prepared
+        used                = prepared[3]
+        params_ranges[i]    = (used, used) if prepared[2] else used
+    print()
+
 
 
     # %%
     # COMPUTING MAIN QUANTITIES
 
-    # Computing the SNR and detection mask (SNR > SNR_thr) for each planet
-    # For IFU (8D):    (planets, R, l0, Dl, r_WFE, IWA, trans_instru, sigma_m)
-    # For Imager (7D): (planets,    l0, Dl, r_WFE, IWA, trans_instru, sigma_m)
-    SNR_planets     = fyh.get_SNR(instru=instru, instru_type=instru_type, post_processing=post_processing, exposure_time=exposure_time, min_DIT=min_DIT, RON0=RON0, RON_lim=RON_lim, DC0=DC0, A_FWHM=A_FWHM, Rc=Rc, filter_type=filter_type, signal_planets=signal_planets, sigma_halo_2_planets=sigma_halo_2_planets, sigma_bkg_2_planets=sigma_bkg_2_planets, sigma_syst_base_2_planets=sigma_syst_base_2_planets, DIT_planets=DIT_planets, R=R if instru_type == "IFU" else None, Dl=Dl if instru_type == "IFU" else None, sigma_m=sigma_m, sim_dir=sim_dir_concept, suffix=suffix, dtype=dtype)
-    mask_detections = fyh.get_mask_detections(SNR_planets=SNR_planets, SNR_thr=SNR_thr, sim_dir=sim_dir_concept, suffix=suffix)
-
-    # Precompute FoV gating once
-    p0_FoV = np.searchsorted(FoV / 2, separation_planets, side="left").astype(np.int32)
-
-    # Getting ndim detection probability
-    # For IFU (8D):    (R, l0, Dl, r_WFE, IWA, trans_instru, sigma_m, FoV)
-    # For Imager (7D): (   l0, Dl, r_WFE, IWA, trans_instru, sigma_m, FoV)
-    Pdet = fyh.get_Pdet(mask_detections=mask_detections, FoV=FoV, p0_FoV=p0_FoV, dtype=dtype, valid_windows_3D=valid_windows_3D)
-
-    # --- Removing useless dimensions ---
-    # Identify dimensions to remove (if size == 1)
-    orig_params   = params.copy()
-    orig_names    = params_names.copy()
-    orig_sizes    = [len(param) for param in params]
-    dim_to_remove = [idim for idim, size in enumerate(orig_sizes) if size == 1]
-    dim_to_keep   = [idim for idim, size in enumerate(orig_sizes) if size != 1]
-    print("\nPdet dimensions reduction:")
-    for name, size in zip(orig_names, orig_sizes):
-        flag = "remove" if size == 1 else "keep"
-        print(f"  - {name:<20} : {size:>3}   [{flag}]")
-    # Actual reduction
-    for idim in sorted(dim_to_remove, reverse=True):
-        Pdet = np.take(Pdet, 0, axis=idim)  # or np.squeeze(Pdet, axis=idim)
-        params.pop(idim)
-        params_ranges.pop(idim)
-        params_priors.pop(idim)
-        params_islog.pop(idim)
-        params_isint.pop(idim)
-        params_names.pop(idim)
-        params_names_l.pop(idim)
-        params_names_L.pop(idim)
-    Ndim  = len(params)
-    ncols = min(2, Ndim)
-    nrows = int(np.ceil(Ndim / ncols))
-    if instru_type == "IFU":
-        valid_windows_reduced = valid_windows_3D.copy()
-        for idim in (2, 1, 0):
-            if orig_sizes[idim] == 1:
-                valid_windows_reduced = np.take(valid_windows_reduced, 0, axis=idim)
-
-    # Plot order: display r_WFE and IWA in the last panels when present
-    dims_last  = [next((idim for idim, name in enumerate(params_names) if key in name), None) for key in ("r_WFE", "IWA")]
-    dims_last  = [idim for idim in dims_last if idim is not None]
-    plot_order = [idim for idim in range(Ndim) if idim not in dims_last] + dims_last
-
-
-
     if plot_global_results:
-        # %%
+        # Computing the SNR and detection mask (SNR > SNR_thr) for each planet
+        # For IFU (8D):    (planets, R, l0, Dl, r_WFE, IWA, trans_instru, sigma_m)
+        # For Imager (7D): (planets,    l0, Dl, r_WFE, IWA, trans_instru, sigma_m)
+        SNR_planets     = fyh.get_SNR(instru=instru, instru_type=instru_type, post_processing=post_processing, exposure_time=exposure_time, min_DIT=min_DIT, RON0=RON0, RON_lim=RON_lim, is_UTR=is_UTR, DC0=DC0, A_FWHM=A_FWHM, Rc=Rc, filter_type=filter_type, signal_planets=signal_planets, sigma_halo_2_planets=sigma_halo_2_planets, sigma_bkg_2_planets=sigma_bkg_2_planets, sigma_syst_base_2_planets=sigma_syst_base_2_planets, DIT_planets=DIT_planets, R=R if instru_type == "IFU" else None, Dl=Dl if instru_type == "IFU" else None, sigma_m=sigma_m, sim_dir=sim_dir_concept, suffix=suffix, dtype=dtype)
+        mask_detections = fyh.get_mask_detections(SNR_planets=SNR_planets, SNR_thr=SNR_thr, sim_dir=sim_dir_concept, suffix=suffix, nproc=nproc, chunksize=chunksize)
+
+        # Precompute FoV gating once
+        p0_FoV = np.searchsorted(FoV / 2, separation_planets, side="left").astype(np.int32)
+
+        # Getting ndim detection probability
+        # For IFU (8D):    (R, l0, Dl, r_WFE, IWA, trans_instru, sigma_m, FoV)
+        # For Imager (7D): (   l0, Dl, r_WFE, IWA, trans_instru, sigma_m, FoV)
+        Pdet = fyh.get_Pdet(mask_detections=mask_detections, FoV=FoV, p0_FoV=p0_FoV, dtype=dtype, valid_windows_3D=valid_windows_3D, nproc=nproc)
+
+        # --- Removing useless dimensions ---
+        # Identify dimensions to remove (if size == 1)
+        orig_params   = params.copy()
+        orig_names    = params_names.copy()
+        orig_sizes    = [len(param) for param in params]
+        dim_to_remove = [idim for idim, size in enumerate(orig_sizes) if size == 1]
+        dim_to_keep   = [idim for idim, size in enumerate(orig_sizes) if size != 1]
+        print("\nPdet dimensions reduction:")
+        for name, size in zip(orig_names, orig_sizes):
+            flag = "remove" if size == 1 else "keep"
+            print(f"  - {name:<20} : {size:>3}   [{flag}]")
+        # Actual reduction
+        for idim in sorted(dim_to_remove, reverse=True):
+            Pdet = np.take(Pdet, 0, axis=idim)  # or np.squeeze(Pdet, axis=idim)
+            params.pop(idim)
+            params_ranges.pop(idim)
+            params_priors.pop(idim)
+            params_islog.pop(idim)
+            params_isint.pop(idim)
+            params_names.pop(idim)
+            params_names_l.pop(idim)
+            params_names_L.pop(idim)
+        Ndim  = len(params)
+        ncols = min(2, Ndim)
+        nrows = int(np.ceil(Ndim / ncols))
+        if instru_type == "IFU":
+            valid_windows_reduced = valid_windows_3D.copy()
+            for idim in (2, 1, 0):
+                if orig_sizes[idim] == 1:
+                    valid_windows_reduced = np.take(valid_windows_reduced, 0, axis=idim)
+
+        # Plot order: display r_WFE and IWA in the last panels when present
+        dims_last  = [next((idim for idim, name in enumerate(params_names) if key in name), None) for key in ("r_WFE", "IWA")]
+        dims_last  = [idim for idim in dims_last if idim is not None]
+        plot_order = [idim for idim in range(Ndim) if idim not in dims_last] + dims_last
+
         # Thermal/Reflected regime split of the planet table
         # Considering both thermal and reflected contribution
         if thermal_model != "None" and reflected_model != "None":
@@ -941,13 +956,13 @@ def main():
             if "thermal" in light_regime_plot:
                 print(f"\n{label_ptypes[ptype]} in thermal light:")
                 idx_ptype_thermal  = np.where(mask_ptype & mask_thermal)[0]
-                Pdet_ptype_thermal = fyh.get_Pdet(mask_detections=mask_detections, FoV=FoV, p0_FoV=p0_FoV, dtype=dtype, indices=idx_ptype_thermal, jump_before_tqdm=False, valid_windows_3D=valid_windows_3D)
+                Pdet_ptype_thermal = fyh.get_Pdet(mask_detections=mask_detections, FoV=FoV, p0_FoV=p0_FoV, dtype=dtype, indices=idx_ptype_thermal, jump_before_tqdm=False, valid_windows_3D=valid_windows_3D, nproc=nproc)
             else:
                 Pdet_ptype_thermal = None
             if "reflected" in light_regime_plot:
                 print(f"\n{label_ptypes[ptype]} in reflected light:")
                 idx_ptype_reflected  = np.where(mask_ptype & mask_reflected)[0]
-                Pdet_ptype_reflected = fyh.get_Pdet(mask_detections=mask_detections, FoV=FoV, p0_FoV=p0_FoV, dtype=dtype, indices=idx_ptype_reflected, jump_before_tqdm=False, valid_windows_3D=valid_windows_3D)
+                Pdet_ptype_reflected = fyh.get_Pdet(mask_detections=mask_detections, FoV=FoV, p0_FoV=p0_FoV, dtype=dtype, indices=idx_ptype_reflected, jump_before_tqdm=False, valid_windows_3D=valid_windows_3D, nproc=nproc)
             else:
                 Pdet_ptype_reflected = None
             for idim in sorted(dim_to_remove, reverse=True):
@@ -1004,32 +1019,10 @@ def main():
             Pdet_plot += N_PT_ptypes_plot[ipt] * Pdet_ptypes_plot[ipt]
         Pdet_plot /= N_PT_plot
 
-        # Helper: normalize to the panel maximum or convert to yield
-        def convert_Pdet_to_plot_quantity(Pdet_curve, N_PT, gain, ymax_panel=None):
-            y = np.asarray(Pdet_curve, dtype=float)
-            if gain:
-                y = 100.0*y/ymax_panel if ymax_panel is not None and np.isfinite(ymax_panel) and ymax_panel > 0 else np.zeros_like(y)
-            else:
-                y = y*N_PT
-            return y
-
-        def get_panel_ymax(curves):
-            values = np.concatenate([np.asarray(curve, dtype=float).ravel() for curve in curves]) if curves else np.array([])
-            return np.nanmax(values) if np.any(np.isfinite(values)) else None
-
 
 
         # %%
         # 2D CORNER PLOT
-
-        def set_log_decade_ticks(axis, vmin, vmax, max_labels=4):
-            # Major ticks at every decade (the default LogLocator drops most of them on small panels spanning many decades),
-            # with labels only every few decades so that they fit in the panel
-            exps = np.arange(np.ceil(np.log10(vmin)), np.floor(np.log10(vmax)) + 1).astype(int)
-            step = max(1, int(np.ceil(len(exps) / max_labels)))
-            axis.set_major_locator(FixedLocator(10.0**exps))
-            axis.set_major_formatter(FuncFormatter(lambda v, pos: rf"$\mathdefault{{10^{{{round(np.log10(v))}}}}}$" if round(np.log10(v)) % step == 0 else ""))
-            axis.set_minor_locator(NullLocator())
 
         # Param values at max pdet_1D
         params_max  = np.zeros((Ndim))
@@ -1071,7 +1064,7 @@ def main():
                     if params_islog[idim]:
                         ax.set_xscale("log")
                     if params_names[idim] == "sigma_m [%]":
-                        set_log_decade_ticks(ax.xaxis, xmin[idim], xmax[idim])
+                        fyh.set_log_decade_ticks(ax.xaxis, xmin[idim], xmax[idim])
 
                 elif jpanel < ipanel:
                     pdet_2D = fyh.reduce_hcube(hcube=Pdet_plot, dims_to_keep=[jdim, idim], params=params, params_ranges=params_ranges, params_priors=params_priors, params_names=params_names, verbose=False)
@@ -1099,9 +1092,9 @@ def main():
                     if params_islog[idim]:
                         ax.set_yscale("log")
                     if params_names[jdim] == "sigma_m [%]":
-                        set_log_decade_ticks(ax.xaxis, xmin[jdim], xmax[jdim])
+                        fyh.set_log_decade_ticks(ax.xaxis, xmin[jdim], xmax[jdim])
                     if params_names[idim] == "sigma_m [%]":
-                        set_log_decade_ticks(ax.yaxis, xmin[idim], xmax[idim])
+                        fyh.set_log_decade_ticks(ax.yaxis, xmin[idim], xmax[idim])
 
                 # Hide major and minor tick labels (log axes spanning < 1 decade label their minor ticks)
                 if ipanel < Ndim - 1:
@@ -1143,9 +1136,9 @@ def main():
                 if "reflected" in light_regime_plot and N_PT_ptypes_reflected[ipt] > 0:
                     Pdet_reflected = fyh.reduce_hcube(hcube=Pdet_ptypes_reflected[ipt], dims_to_keep=[idim], params=params, params_ranges=params_ranges, params_priors=params_priors, params_names=params_names, verbose=False)
                     curves.append((Pdet_reflected, N_PT_ptypes_reflected[ipt], ptype, "C0"))
-            ymax_panel = get_panel_ymax([curve[0] for curve in curves]) if gain else None
+            ymax_panel = fyh.get_panel_ymax([curve[0] for curve in curves]) if gain else None
             for Pdet_1D, N_PT_curve, ptype, color in curves:
-                y = convert_Pdet_to_plot_quantity(Pdet_curve=Pdet_1D, N_PT=N_PT_curve, gain=gain, ymax_panel=ymax_panel)
+                y = fyh.convert_Pdet_to_plot_quantity(Pdet_curve=Pdet_1D, N_PT=N_PT_curve, gain=gain, ymax_panel=ymax_panel)
                 ax.plot(params[idim], y, ls="-", lw=lw, c=color, marker=marker_ptypes[ptype], ms=ms, markerfacecolor="white", markeredgewidth=1.5, alpha=alpha, zorder=3)
 
             # Axis formatting
@@ -1168,34 +1161,34 @@ def main():
             # Planet-type legend
             if ipanel ==2:
                 handles_ptype = [Line2D([], [], ls="", marker=marker_ptypes[ptype], ms=ms, markerfacecolor="white", markeredgewidth=1.5, color="k", label=f"{label_ptypes[ptype]}") for ipt, ptype in enumerate(ptypes)]
-                leg_ptype = ax.legend(handles=handles_ptype, fontsize='small', loc="upper left", frameon=True, edgecolor="gray", facecolor="white")#, title="Planet type", title_fontsize=fontsize + 4)
+                leg_ptype = ax.legend(handles=handles_ptype, fontsize=fontsize, loc="upper left", frameon=True, edgecolor="gray", facecolor="white")#, title="Planet type", title_fontsize=fontsize + 4)
                 ax.add_artist(leg_ptype)
 
             # Planet-regime legend
             if ipanel == 3 and light_regime_plot == "thermal+reflected":
                 handles_regime = [Line2D([], [], ls="-", lw=lw + 2, color="C3", label="Thermal"), Line2D([], [], ls="-", lw=lw + 2, color="C0", label="Reflected")]
-                leg_regime = ax.legend(handles=handles_regime, fontsize='small', loc="lower right", frameon=True, edgecolor="gray", facecolor="white")#, title="Planet-light regime", title_fontsize=fontsize + 4)
+                leg_regime = ax.legend(handles=handles_regime, fontsize=fontsize, loc="lower right", frameon=True, edgecolor="gray", facecolor="white")#, title="Planet-light regime", title_fontsize=fontsize + 4)
                 ax.add_artist(leg_regime)
 
             # Systematics budget with JWST/MIRI/MRS ~ 1%.
             if params_names[idim] == "sigma_m [%]" and post_processing == "MM":
                 x0 = 1.0 # [%]
                 ax.axvline(x0, c="k", ls="--", lw=lw)
-                ax.annotate("JWST/MIRI/MRS", xy=(x0, 0.5), xycoords=("data", "axes fraction"), xytext=(6, 0), textcoords="offset points", rotation=270, va="center", ha="left", fontsize='small', color="k", bbox=dict(boxstyle="round,pad=0.2", fc="white", ec="gray", alpha=0.85), zorder=5, clip_on=True)
+                ax.annotate("JWST/MIRI/MRS", xy=(x0, 0.5), xycoords=("data", "axes fraction"), xytext=(6, 0), textcoords="offset points", rotation=270, va="center", ha="left", fontsize=fontsize, color="k", bbox=dict(boxstyle="round,pad=0.2", fc="white", ec="gray", alpha=0.85), zorder=5, clip_on=True)
             if params_names[idim] == "sigma_m [%]" and post_processing == "DI":
                 x0 = 0.1  # [%] = 1e-3 in fractional units with VLT/SPHERE PACO
                 ax.axvline(x0, c="k", ls="--", lw=lw)
-                ax.annotate("Optimistic on-sky DI", xy=(x0, 0.5), xycoords=("data", "axes fraction"), xytext=(6, 0), textcoords="offset points", rotation=270, va="center", ha="left", fontsize='small', color="k", bbox=dict(boxstyle="round,pad=0.2", fc="white", ec="gray", alpha=0.85), zorder=5, clip_on=True)
+                ax.annotate("Optimistic on-sky DI", xy=(x0, 0.5), xycoords=("data", "axes fraction"), xytext=(6, 0), textcoords="offset points", rotation=270, va="center", ha="left", fontsize=fontsize, color="k", bbox=dict(boxstyle="round,pad=0.2", fc="white", ec="gray", alpha=0.85), zorder=5, clip_on=True)
 
             # r_WFE and IWA ref values
             if params_names[idim] == "r_WFE":
                 x0 = r_WFE_ref # [dimensionless]
                 ax.axvline(x0, c="k", ls="--", lw=lw)
-                ax.annotate("Nominal AO perf.", xy=(x0, 0.5), xycoords=("data", "axes fraction"), xytext=(6, 0), textcoords="offset points", rotation=270, va="center", ha="left", fontsize='small', color="k", bbox=dict(boxstyle="round,pad=0.2", fc="white", ec="gray", alpha=0.85), zorder=5, clip_on=True)
+                ax.annotate("Nominal AO perf.", xy=(x0, 0.5), xycoords=("data", "axes fraction"), xytext=(6, 0), textcoords="offset points", rotation=270, va="center", ha="left", fontsize=fontsize, color="k", bbox=dict(boxstyle="round,pad=0.2", fc="white", ec="gray", alpha=0.85), zorder=5, clip_on=True)
             if params_names[idim] == "IWA [lambda0/D]":
                 x0 = IWA_ref  # [lambda0_band/D]
                 ax.axvline(x0, c="k", ls="--", lw=lw)
-                ax.annotate("PCS nominal FPM", xy=(x0, 0.5), xycoords=("data", "axes fraction"), xytext=(6, 0), textcoords="offset points", rotation=270, va="center", ha="left", fontsize='small', color="k", bbox=dict(boxstyle="round,pad=0.2", fc="white", ec="gray", alpha=0.85), zorder=5, clip_on=True)
+                ax.annotate("PCS nominal FPM", xy=(x0, 0.5), xycoords=("data", "axes fraction"), xytext=(6, 0), textcoords="offset points", rotation=270, va="center", ha="left", fontsize=fontsize, color="k", bbox=dict(boxstyle="round,pad=0.2", fc="white", ec="gray", alpha=0.85), zorder=5, clip_on=True)
 
         # Turn off unused panels
         for k in range(Ndim, nrows * ncols):
@@ -1212,8 +1205,8 @@ def main():
 
         # Title
         quantity_name = "detection probability gain" if gain else "detection yield"
-        title  = f"ELT/{instru} {quantity_name} in {exposure_time/60:.0f}hr - {instru_type} with {post_processing}"
-        title += f"\n{N_PT} {table_type.replace('Archive', 'known').replace('Simulated', 'simulated')} planets"
+        title         = f"ELT/{instru} {quantity_name} in {exposure_time/60:.0f}hr - {instru_type} with {post_processing}"
+        title        += f"\n{N_PT} {table_type.replace('Archive', 'known').replace('Simulated', 'simulated')} planets"
         fig.suptitle(title, fontsize=fontsize + 6, weight="bold", y=1.00, linespacing=1.6)
         fig.tight_layout(h_pad=3.0, w_pad=3.0)
         fig.savefig(sim_dir_concept / f"ELT_{instru}_{instru_type}_{post_processing}_detection_{table_type}_{light_regime_plot}_Pdet.png", bbox_inches="tight", dpi=dpi_fig)
@@ -1280,9 +1273,9 @@ def main():
                         params_ranges_band[idx_l0] = (l0_band, l0_band)
                         Pdet_1D                    = fyh.reduce_hcube(hcube=Pdet_ptypes_plot[ipt], dims_to_keep=[idim], params=params, params_ranges=params_ranges_band, params_priors=params_priors, params_names=params_names, verbose=False)
                         curves.append((Pdet_1D, N_PT_ptypes_plot[ipt], ptype, cmap(iband)))
-                ymax_panel = get_panel_ymax([curve[0] for curve in curves]) if gain else None
+                ymax_panel = fyh.get_panel_ymax([curve[0] for curve in curves]) if gain else None
                 for Pdet_1D, N_PT_curve, ptype, color in curves:
-                    y = convert_Pdet_to_plot_quantity(Pdet_curve=Pdet_1D, N_PT=N_PT_curve, gain=gain, ymax_panel=ymax_panel)
+                    y = fyh.convert_Pdet_to_plot_quantity(Pdet_curve=Pdet_1D, N_PT=N_PT_curve, gain=gain, ymax_panel=ymax_panel)
                     ax.plot(params[idim], y, ls="-", lw=lw, c=color, marker=marker_ptypes[ptype], ms=ms, markerfacecolor="white", markeredgewidth=1.5, alpha=alpha, zorder=3)
                 if idim == idx_l0:
                     for iband, l0_band in enumerate(band_l0_values):
@@ -1315,21 +1308,21 @@ def main():
                 if params_names[idim] == "sigma_m [%]" and post_processing == "MM":
                     x0 = 1.0 # [%]
                     ax.axvline(x0, c="k", ls="--", lw=lw)
-                    ax.annotate("JWST/MIRI/MRS", xy=(x0, 0.5), xycoords=("data", "axes fraction"), xytext=(6, 0), textcoords="offset points", rotation=270, va="center", ha="left", fontsize='small', color="k", bbox=dict(boxstyle="round,pad=0.2", fc="white", ec="gray", alpha=0.85), zorder=5, clip_on=True)
+                    ax.annotate("JWST/MIRI/MRS", xy=(x0, 0.5), xycoords=("data", "axes fraction"), xytext=(6, 0), textcoords="offset points", rotation=270, va="center", ha="left", fontsize=fontsize, color="k", bbox=dict(boxstyle="round,pad=0.2", fc="white", ec="gray", alpha=0.85), zorder=5, clip_on=True)
                 if params_names[idim] == "sigma_m [%]" and post_processing == "DI":
                     x0 = 0.1  # [%] = 1e-3 in fractional units with VLT/SPHERE PACO
                     ax.axvline(x0, c="k", ls="--", lw=lw)
-                    ax.annotate("Optimistic on-sky DI", xy=(x0, 0.5), xycoords=("data", "axes fraction"), xytext=(6, 0), textcoords="offset points", rotation=270, va="center", ha="left", fontsize='small', color="k", bbox=dict(boxstyle="round,pad=0.2", fc="white", ec="gray", alpha=0.85), zorder=5, clip_on=True)
+                    ax.annotate("Optimistic on-sky DI", xy=(x0, 0.5), xycoords=("data", "axes fraction"), xytext=(6, 0), textcoords="offset points", rotation=270, va="center", ha="left", fontsize=fontsize, color="k", bbox=dict(boxstyle="round,pad=0.2", fc="white", ec="gray", alpha=0.85), zorder=5, clip_on=True)
 
                 # r_WFE and IWA ref values
                 if params_names[idim] == "r_WFE":
                     x0 = r_WFE_ref # [dimensionless]
                     ax.axvline(x0, c="k", ls="--", lw=lw)
-                    ax.annotate("Nominal AO perf.", xy=(x0, 0.5), xycoords=("data", "axes fraction"), xytext=(6, 0), textcoords="offset points", rotation=270, va="center", ha="left", fontsize='small', color="k", bbox=dict(boxstyle="round,pad=0.2", fc="white", ec="gray", alpha=0.85), zorder=5, clip_on=True)
+                    ax.annotate("Nominal AO perf.", xy=(x0, 0.5), xycoords=("data", "axes fraction"), xytext=(6, 0), textcoords="offset points", rotation=270, va="center", ha="left", fontsize=fontsize, color="k", bbox=dict(boxstyle="round,pad=0.2", fc="white", ec="gray", alpha=0.85), zorder=5, clip_on=True)
                 if params_names[idim] == "IWA [lambda0/D]":
                     x0 = IWA_ref  # [lambda0_band/D]
                     ax.axvline(x0, c="k", ls="--", lw=lw)
-                    ax.annotate("PCS nominal FPM", xy=(x0, 0.5), xycoords=("data", "axes fraction"), xytext=(6, 0), textcoords="offset points", rotation=270, va="center", ha="left", fontsize='small', color="k", bbox=dict(boxstyle="round,pad=0.2", fc="white", ec="gray", alpha=0.85), zorder=5, clip_on=True)
+                    ax.annotate("PCS nominal FPM", xy=(x0, 0.5), xycoords=("data", "axes fraction"), xytext=(6, 0), textcoords="offset points", rotation=270, va="center", ha="left", fontsize=fontsize, color="k", bbox=dict(boxstyle="round,pad=0.2", fc="white", ec="gray", alpha=0.85), zorder=5, clip_on=True)
 
             # Turn off unused panels
             for k in range(Ndim, nrows * ncols):
@@ -1448,252 +1441,30 @@ def main():
 
 
     if plot_populations:
-        #%%
+        # %%
         # POPULATION DIAGNOSTICS
+        population_results    = fyh.get_population_results(instru_type=instru_type, signal_planets=signal_planets, sigma_halo_2_planets=sigma_halo_2_planets, sigma_bkg_2_planets=sigma_bkg_2_planets, sigma_syst_base_2_planets=sigma_syst_base_2_planets, DIT_planets=DIT_planets, separation_planets=separation_planets, axes=population_axes, prepared=plot_prepared, detector_l0=detector_l0, RON0=RON0, RON_lim=RON_lim, DC0=DC0, min_DIT=min_DIT, is_UTR=is_UTR, exposure_time=exposure_time, A_FWHM=A_FWHM, valid_windows_3D=valid_windows_3D, nproc=nproc, chunksize=chunksize)
+        SNR_plot              = population_results["SNR"]
+        dominant_noise        = population_results["dominant_noise"]
+        dominant_noise[dominant_noise == "Systematics"] = str(residuals)
 
-        idx_FoV      = next(idx for idx, name in enumerate(params_names) if "FoV"     in name)
-        idx_sigma_m  = next(idx for idx, name in enumerate(params_names) if "sigma_m" in name)
-        idx_l0       = next(idx for idx, name in enumerate(params_names) if "l0"      in name)
-        noise_labels = np.array(["Stellar halo", "Background", "Read noise", "Dark current", str(residuals)], dtype=object)
+        yield_population_plot(table=table_type, instru=instru, instru_type=instru_type, post_processing=post_processing, thermal_model=thermal_model, reflected_model=reflected_model, exposure_time=exposure_time, band_contrast_plot=band_plot, band_regime_plot=band_plot, planet_table=planet_table, SNR_plot=SNR_plot, dominant_noise=dominant_noise, SNR_thr=SNR_thr, save_dir=sim_dir_concept, DL_mas=np.nan, show_golden_sample=False, show_det_regions=False, show_ptype_regions=False, space=planet_population_space)
 
-        # Parameter ranges used specifically for population diagnostics
-        params_ranges_pop = [tuple(rng) for rng in params_ranges]
-        if snr_population_mode == "personalized":
-            personalized_ranges = {"R": R_plot, "l0": l0_plot, "Dl": Dl_plot, "r_WFE": r_WFE_plot, "IWA": IWA_plot, "trans_instru": trans_instru_plot, "sigma_m": sigma_m_plot, "FoV": FoV_plot}
-            allowed_keys        = {"IFU": {"R", "l0", "Dl", "r_WFE", "IWA", "trans_instru", "sigma_m", "FoV"}, "imager": {"l0", "Dl", "r_WFE", "IWA", "trans_instru", "sigma_m", "FoV"}}[instru_type]
-            def format_range(r):
-                return f"{r[0]:g}" if np.isclose(r[0], r[1]) else f"[{r[0]:g}, {r[1]:g}]"
-            def format_value(value):
-                if value is None:
-                    return "None"
-                value = np.asarray(value).ravel()
-                return f"{value[0]:g}" if value.size == 1 else f"[{value[0]:g}, {value[1]:g}]"
-            def print_range(key, value, used=None, warning=""):
-                used_str = f"-> {used}" if used is not None else ""
-                print(f"  {key+'_plot':<18} = {format_value(value):<14} {used_str:<14} {warning}")
-            print("\nPopulation plot personalized ranges:")
-            for key, value in personalized_ranges.items():
-                if key not in allowed_keys:
-                    print_range(key, value, warning=f"(WARNING: not used for {instru_type})")
-                    continue
-                idx = next((idx for idx, name in enumerate(params_names) if name == key or key in name), None)
-                # Dimension existed originally but was removed because it was fixed
-                if idx is None:
-                    idx_orig = next((idx for idx, name in enumerate(orig_names) if name == key or key in name), None)
-                    if idx_orig is not None:
-                        fixed_value = float(np.asarray(orig_params[idx_orig])[0])
-                        requested   = np.asarray(value, dtype=float).ravel() if value is not None else np.array([])
-                        changed     = value is not None and (requested.size != 1 or not np.isclose(requested[0], fixed_value))
-                        print_range(key, value, f"{fixed_value:g}" if changed else None, f"(WARNING: parameter fixed at {fixed_value:g})")
-                    else:
-                        print_range(key, value, warning="(WARNING: parameter unavailable)")
-                    continue
-                # None -> keep default range
-                if value is None:
-                    print_range(key, value, format_range(params_ranges_pop[idx]))
-                    continue
-                axis      = np.asarray(params[idx], dtype=float)
-                requested = np.asarray(value, dtype=float).ravel()
-                if requested.size == 1:
-                    requested = np.repeat(requested, 2)
-                elif requested.size != 2:
-                    print_range(key, value, format_range(params_ranges_pop[idx]), "(WARNING: expected scalar or [min, max]; default used)")
-                    continue
-                warning = ""
-                if requested[0] > requested[1]:
-                    requested = requested[::-1]
-                    warning   = "(WARNING: reversed range reordered)"
-                used                   = np.clip(requested, axis[0], axis[-1])
-                params_ranges_pop[idx] = (float(used[0]), float(used[1]))
-                changed = not np.allclose(requested, used)
-                if changed:
-                    warning = f"(WARNING: cropped to [{axis[0]:g}, {axis[-1]:g}])"
-                print_range(key, value, format_range(params_ranges_pop[idx]) if changed else None, warning)
-            print()
-
-        # Best-Pdet configuration
-        if snr_population_mode == "max":
-            params_imax                             = np.array(np.unravel_index(np.nanargmax(Pdet), Pdet.shape), dtype=int)
-            params_imax_snr                         = [params_imax[idim] for idim in range(Ndim) if idim != idx_FoV]
-            SNR_plot                                = np.asarray(SNR_planets.squeeze()[(slice(None),) + tuple(params_imax_snr)], dtype=float).copy()
-            SNR_plot[p0_FoV > params_imax[idx_FoV]] = 0.0
-
-            # Raw arrays do not contain sigma_m or FoV
-            params_imax_raw   = [params_imax[idim] for idim in range(Ndim) if idim not in (idx_sigma_m, idx_FoV)]
-            raw_selection     = (slice(None),) + tuple(params_imax_raw)
-            sigma_halo_2_best = np.asarray(sigma_halo_2_planets.squeeze()[raw_selection], dtype=float)
-            sigma_bkg_2_best  = np.asarray(sigma_bkg_2_planets.squeeze()[raw_selection], dtype=float)
-            DIT_best          = np.asarray(DIT_planets.squeeze()[raw_selection], dtype=float)
-
-            il0_best     = params_imax[idx_l0]
-            RON0_best    = float(np.asarray(RON0)[il0_best])
-            RON_lim_best = float(np.asarray(RON_lim)[il0_best])
-            DC0_best     = float(np.asarray(DC0)[il0_best])
-            min_DIT_best = float(np.asarray(min_DIT)[il0_best])
-            N_DIT_best   = np.clip(np.floor(exposure_time / DIT_best), 1, None)
-            N_read_best  = np.floor(DIT_best / min_DIT_best).astype(np.int32)
-
-            sigma_RON_2_best = np.full_like(DIT_best, RON0_best**2, dtype=float)
-            mask_read        = N_read_best >= 2
-            if np.any(mask_read):
-                n_read                      = N_read_best[mask_read].astype(float)
-                sigma_RON_2_best[mask_read] = RON0_best**2 * 12 * (n_read - 1) / (n_read * (n_read + 1)) + RON_lim_best**2
-            sigma_RON_2_best *= A_FWHM
-            sigma_DC_2_best   = DC0_best * DIT_best * A_FWHM
-            sigma_m_best      = float(params[idx_sigma_m][params_imax[idx_sigma_m]]) / 100.0
-
-            if instru_type == "IFU":
-                sigma_syst_base_2_best = np.asarray(sigma_syst_base_2_planets.squeeze()[raw_selection], dtype=float)
-            elif instru_type == "imager":
-                sigma_syst_base_2_best = sigma_halo_2_best**2
-            else:
-                raise ValueError("instru_type must be 'IFU' or 'imager'.")
-
-            var_halo = N_DIT_best * sigma_halo_2_best
-            var_bkg  = N_DIT_best * sigma_bkg_2_best
-            var_RON  = N_DIT_best * sigma_RON_2_best
-            var_DC   = N_DIT_best * sigma_DC_2_best
-            var_syst = N_DIT_best**2 * sigma_m_best**2 * sigma_syst_base_2_best
-
-        # Marginalized parameter space
-        elif snr_population_mode in ("marginalized", "personalized"):
-            non_FoV_dims      = [idim                    for idim in range(Ndim) if idim != idx_FoV]
-            params_snr        = [params[idim]            for idim in non_FoV_dims]
-            params_ranges_snr = [params_ranges_pop[idim] for idim in non_FoV_dims]
-            params_priors_snr = [params_priors[idim]     for idim in non_FoV_dims]
-            params_names_snr  = [params_names[idim]      for idim in non_FoV_dims]
-
-            SNR_plot = np.zeros(N_PT, dtype=float)
-            for ip in tqdm(range(N_PT), desc="Marginalizing SNR over parameter grid"):
-                SNR_i = np.asarray(SNR_planets[ip], dtype=float).squeeze()
-                if instru_type == "IFU":
-                    mask_shape = (valid_windows_reduced.shape + (1,) * (SNR_i.ndim - valid_windows_reduced.ndim))
-                    SNR_i      = np.where(valid_windows_reduced.reshape(mask_shape), SNR_i, np.nan)
-                SNR_plot[ip] = float(fyh.reduce_hcube(hcube=SNR_i, dims_to_keep=[], params=params_snr, params_ranges=params_ranges_snr, params_priors=params_priors_snr, params_names=params_names_snr, verbose=False))
-
-            # FoV marginalization
-            idx_FoV_range, w_FoV = fyh.get_axis_weights_in_range(axis=np.asarray(params[idx_FoV], dtype=float), pmin=params_ranges_pop[idx_FoV][0], pmax=params_ranges_pop[idx_FoV][1], prior=params_priors[idx_FoV])
-            w_FoV               /= np.sum(w_FoV)
-            FoV_weight_planets   = np.zeros(N_PT, dtype=float)
-            for iFoV, weight in zip(idx_FoV_range, w_FoV):
-                FoV_weight_planets[p0_FoV <= iFoV] += weight
-            SNR_plot *= FoV_weight_planets
-
-            # Raw quantities contain neither sigma_m nor FoV
-            raw_dims          = [idim for idim in range(Ndim) if idim not in (idx_sigma_m, idx_FoV)]
-            params_raw        = [params[idim]            for idim in raw_dims]
-            params_ranges_raw = [params_ranges_pop[idim] for idim in raw_dims]
-            params_priors_raw = [params_priors[idim]     for idim in raw_dims]
-            params_names_raw  = [params_names[idim]      for idim in raw_dims]
-            idx_l0_raw        = raw_dims.index(idx_l0)
-
-            idx_sigma_m_range, w_sigma_m = fyh.get_axis_weights_in_range(axis=np.asarray(params[idx_sigma_m], dtype=float), pmin=params_ranges_pop[idx_sigma_m][0], pmax=params_ranges_pop[idx_sigma_m][1], prior=params_priors[idx_sigma_m])
-            w_sigma_m                   /= np.sum(w_sigma_m)
-            sigma_m_axis                 = np.asarray(params[idx_sigma_m], dtype=float)
-            mean_sigma_m_2               = np.sum(w_sigma_m * (sigma_m_axis[idx_sigma_m_range] / 100.0)**2)
-
-            shape_l0             = [1] * len(raw_dims)
-            shape_l0[idx_l0_raw] = len(params[idx_l0])
-            shape_l0             = tuple(shape_l0)
-            RON0_grid            = np.asarray(RON0, dtype=float).reshape(shape_l0)
-            RON_lim_grid         = np.asarray(RON_lim, dtype=float).reshape(shape_l0)
-            DC0_grid             = np.asarray(DC0, dtype=float).reshape(shape_l0)
-            min_DIT_grid         = np.asarray(min_DIT, dtype=float).reshape(shape_l0)
-
-            def marginalize_raw(quantity):
-                quantity = np.asarray(quantity, dtype=float)
-                if instru_type == "IFU":
-                    mask_shape = (valid_windows_reduced.shape + (1,) * (quantity.ndim - valid_windows_reduced.ndim))
-                    quantity   = np.where(valid_windows_reduced.reshape(mask_shape), quantity, np.nan)
-                return float(fyh.reduce_hcube(hcube=quantity, dims_to_keep=[], params=params_raw, params_ranges=params_ranges_raw, params_priors=params_priors_raw, params_names=params_names_raw, verbose=False))
-
-            var_halo          = np.zeros(N_PT, dtype=float)
-            var_bkg           = np.zeros(N_PT, dtype=float)
-            var_RON           = np.zeros(N_PT, dtype=float)
-            var_DC            = np.zeros(N_PT, dtype=float)
-            var_syst          = np.zeros(N_PT, dtype=float)
-            N_DIT_marg        = np.zeros(N_PT, dtype=float)
-            signal_total_marg = np.zeros(N_PT, dtype=float)
-
-            for ip in tqdm(range(N_PT), desc="Marginalizing dominant-noise terms"):
-                signal_i       = np.nan_to_num(np.asarray(signal_planets[ip], dtype=float).squeeze(), nan=0.0, posinf=0.0, neginf=0.0)
-                sigma_halo_2_i = np.nan_to_num(np.asarray(sigma_halo_2_planets[ip], dtype=float).squeeze(), nan=0.0, posinf=0.0, neginf=0.0)
-                sigma_bkg_2_i  = np.nan_to_num(np.asarray(sigma_bkg_2_planets[ip], dtype=float).squeeze(), nan=0.0, posinf=0.0, neginf=0.0)
-                DIT_i          = np.asarray(DIT_planets[ip], dtype=float).squeeze()
-                valid_DIT      = np.isfinite(DIT_i) & (DIT_i > 0)
-                DIT_safe       = np.where(valid_DIT, DIT_i, 1.0)
-                RON0_i         = np.broadcast_to(RON0_grid, DIT_safe.shape)
-                RON_lim_i      = np.broadcast_to(RON_lim_grid, DIT_safe.shape)
-                DC0_i          = np.broadcast_to(DC0_grid, DIT_safe.shape)
-                min_DIT_i      = np.broadcast_to(min_DIT_grid, DIT_safe.shape)
-                N_DIT_i        = np.where(valid_DIT, np.clip(np.floor(exposure_time / DIT_safe), 1, None), 0.0)
-                N_read_i       = np.where(valid_DIT, np.floor(DIT_safe / min_DIT_i), 0).astype(np.int32)
-                sigma_RON_2_i  = RON0_i**2
-                mask_read      = N_read_i >= 2
-
-                if np.any(mask_read):
-                    n_read                   = N_read_i[mask_read].astype(float)
-                    sigma_RON_2_i[mask_read] = RON0_i[mask_read]**2 * 12 * (n_read - 1) / (n_read * (n_read + 1)) + RON_lim_i[mask_read]**2
-
-                sigma_RON_2_i *= A_FWHM
-                sigma_RON_2_i  = np.where(valid_DIT, sigma_RON_2_i, 0.0)
-                sigma_DC_2_i   = np.where(valid_DIT, DC0_i * DIT_safe * A_FWHM, 0.0)
-
-                if instru_type == "IFU":
-                    sigma_syst_base_2_i = np.nan_to_num(np.asarray(sigma_syst_base_2_planets[ip], dtype=float).squeeze(), nan=0.0, posinf=0.0, neginf=0.0)
-                elif instru_type == "imager":
-                    sigma_syst_base_2_i = sigma_halo_2_i**2
-                else:
-                    raise ValueError("instru_type must be 'IFU' or 'imager'.")
-
-                var_halo[ip]          = marginalize_raw(N_DIT_i * sigma_halo_2_i)
-                var_bkg[ip]           = marginalize_raw(N_DIT_i * sigma_bkg_2_i)
-                var_RON[ip]           = marginalize_raw(N_DIT_i * sigma_RON_2_i)
-                var_DC[ip]            = marginalize_raw(N_DIT_i * sigma_DC_2_i)
-                var_syst[ip]          = marginalize_raw(N_DIT_i**2 * mean_sigma_m_2 * sigma_syst_base_2_i)
-                N_DIT_marg[ip]        = marginalize_raw(N_DIT_i)
-                signal_total_marg[ip] = marginalize_raw(N_DIT_i * signal_i)
-
-            signal_INSTRU     = np.full(N_PT, np.nan, dtype=float)
-            sigma_fund_INSTRU = np.full(N_PT, np.nan, dtype=float)
-            sigma_syst_INSTRU = np.full(N_PT, np.nan, dtype=float)
-            DIT_INSTRU        = np.full(N_PT, np.nan, dtype=float)
-
-            var_fund = var_halo + var_bkg + var_RON + var_DC
-            valid    = np.isfinite(N_DIT_marg) & np.isfinite(signal_total_marg) & np.isfinite(var_fund) & np.isfinite(var_syst) & (N_DIT_marg > 0) & (signal_total_marg > 0) & (var_fund >= 0) & (var_syst >= 0)
-
-            DIT_INSTRU[valid]        = exposure_time / N_DIT_marg[valid]
-            signal_INSTRU[valid]     = signal_total_marg[valid] / N_DIT_marg[valid]
-            sigma_fund_INSTRU[valid] = np.sqrt(var_fund[valid] / N_DIT_marg[valid])
-            sigma_syst_INSTRU[valid] = np.sqrt(var_syst[valid]) / N_DIT_marg[valid]
-
-            if instru_type == "IFU" and post_processing == "MM":
-                path = archive_path if table_type == "Archive" else simulated_path
-                fyh.save_marginalized_planet_table(planet_table=planet_table, signal=signal_INSTRU, sigma_fund=sigma_fund_INSTRU, sigma_syst=sigma_syst_INSTRU, DIT=DIT_INSTRU, SNR=SNR_plot, exposure_time=exposure_time, table=table_type, instru=instru, apodizer=apodizer, strehl=strehl, coronagraph=coronagraph, name_model=name_model, path=path)
-
-        else:
-            raise ValueError("snr_population_mode must be 'max', 'marginalized' or 'personalized'.")
-
-        noise_stack                 = np.vstack([var_halo, var_bkg, var_RON, var_DC, var_syst])
-        valid_noise                 = np.any(np.isfinite(noise_stack), axis=0)
-        dominant_noise              = np.full(N_PT, "Unknown", dtype=object)
-        dominant_noise[valid_noise] = noise_labels[np.nanargmax(noise_stack[:, valid_noise], axis=0)]
-
-        yield_population_plot(table=table_type, instru=instru, instru_type=instru_type, post_processing=post_processing, thermal_model=thermal_model, reflected_model=reflected_model, exposure_time=exposure_time, band_contrast_plot=band_plot, band_regime_plot=band_plot, planet_table=planet_table, SNR_plot=SNR_plot, dominant_noise=dominant_noise, SNR_thr=SNR_thr, save_dir=sim_dir_concept, DL_mas=np.nan, show_golden_sample=show_golden_sample, show_det_regions=show_det_regions, show_ptype_regions=show_ptype_regions, space=planet_population_space)
 
 
     # %%
-    # --- Clean temporary SNR and mask_detections memmap files ---
-    snr_tmp_path  = Path(SNR_planets.filename)
-    mask_tmp_path = Path(mask_detections.filename)
+    # --- Clean temporary memmaps generated for global plots, if any ---
+    if plot_global_results:
+        snr_tmp_path  = Path(SNR_planets.filename)
+        mask_tmp_path = Path(mask_detections.filename)
+        del SNR_planets, mask_detections
+        gc.collect()
+        for path in (snr_tmp_path, mask_tmp_path):
+            if path.exists():
+                path.unlink()
 
-    del SNR_planets, mask_detections, signal_planets, sigma_halo_2_planets, sigma_bkg_2_planets, sigma_syst_base_2_planets, DIT_planets
+    del signal_planets, sigma_halo_2_planets, sigma_bkg_2_planets, sigma_syst_base_2_planets, DIT_planets
     gc.collect()
-
-    if snr_tmp_path.exists():
-        snr_tmp_path.unlink()
-    if mask_tmp_path.exists():
-        mask_tmp_path.unlink()
 
     return locals()
 

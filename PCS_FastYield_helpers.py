@@ -11,63 +11,28 @@ os.environ["NUMBA_NUM_THREADS"]    = "1"
 
 from fastyield.config import rad2arcsec
 from fastyield.FastYield import get_filename_table
-from fastyield.FastYield_helpers import create_memmap_with_log
+from fastyield.FastYield_helpers import create_memmap_with_log, interp_flat_last_axis, sigma_RON_2_from_DIT, window_nanmax_1d, window_sums_1d, window_sigma_al_spec_1d
 from fastyield.spectrum import get_thermal_reflected_spectrum, filtered_flux
-from fastyield.signal_noise import compress_h_for_sigma_base_2, compute_sigma_base_2_speck_numba, compute_sigma_base_2_al_spat_numba, compute_sigma_base_2_al_spec_fast
+from fastyield.signal_noise import compress_h_for_sigma_base_2, compute_sigma_base_2_speck_numba, compute_sigma_base_2_al_spat_numba
 
 # import numpy modules
 import numpy as np
+
+# import matplotlib modules
+from matplotlib.ticker import FixedLocator, FuncFormatter, NullLocator
 
 # import other modules
 from tqdm import tqdm
 from multiprocessing import cpu_count
 import multiprocessing as mp
 from pathlib import Path
+from tempfile import TemporaryDirectory
 import sys
 import yaml
 
 # Parameters for multiprocessing
 nproc     = max(cpu_count()-3, 1)
 chunksize = 8
-
-# TODO :
-# Required if FASTYIELD_SIM_DATA_PATH is not defined:
-# set the path to your local FastYield sim_data directory.
-# This directory should contain the instrumental/simulation data folders
-# and the Spectra/ directory.
-# set_sim_data_path("/path/to/sim_data")
-
-
-def get_star_mag(planet, band):
-    """
-    Return the stellar magnitude in the requested photometric band.
-    Used to select/interpolate PCS AO/PSF performance.
-    """
-    colnames = getattr(planet, "colnames", None)
-    if colnames is None and getattr(planet, "table", None) is not None:
-        colnames = planet.table.colnames
-    if colnames is None:
-        colnames = getattr(getattr(planet, "dtype", None), "names", ()) or ()
-    band = str(band).strip()
-    if band not in ("V", "z"):
-        raise ValueError(f"Unsupported WFS band: {band!r}")
-    normalized = {str(name).lower().replace("_", "").replace(" ", ""): name for name in colnames}
-    candidates = (f"Star{band}mag",)
-    for candidate in candidates:
-        key = candidate.lower().replace("_", "").replace(" ", "")
-        if key not in normalized:
-            continue
-        value = planet[normalized[key]]
-        if np.any(np.ma.getmaskarray(value)):
-            continue
-        try:
-            value = float(value)
-        except (TypeError, ValueError):
-            continue
-        if np.isfinite(value):
-            return value
-    raise ValueError(
-        f"Missing valid stellar {band}-band magnitude. Available columns: {list(colnames)}")
 
 
 
@@ -86,28 +51,16 @@ def load_instrument_concept(name, concept_dir=None):
         return yaml.safe_load(f)
 
 
+
 # -------------------------------------------------------------
 # Functions for IFU and imager for main quantities computations
 # -------------------------------------------------------------
 
 # --- General helpers ---
-def interp_flat_last_axis(x, y, x0, dtype=None):
-    """
-    Fast linear interpolation along the last axis, with flat extrapolation.
-    This is optimized for quantities sampled as (..., Nx), for example
-    PSF_profile_5D[..., separation].
-    """
-    x0  = np.clip(x0, x[0], x[-1])
-    i1  = int(np.searchsorted(x, x0, side="right"))
-    i1  = int(np.clip(i1, 1, x.size - 1))
-    i0  = i1 - 1
-    w   = (x0 - x[i0]) / (x[i1] - x[i0])
-    out = (1.0 - w) * y[..., i0] + w * y[..., i1]
-    return out.astype(dtype, copy=False) if dtype is not None else out
 
 def interp_mag_flat_4d(mag_grid, y_4d, mag, dtype=None):
     """
-    Linear interpolation along the stellar V-magnitude axis.
+    Linear interpolation along the stellar magnitude axis.
 
     Parameters
     ----------
@@ -126,129 +79,35 @@ def interp_mag_flat_4d(mag_grid, y_4d, mag, dtype=None):
     out = (1 - w) * y_4d[..., i0] + w * y_4d[..., i1]
     return out.astype(dtype, copy=False) if dtype is not None else out
 
-def normalize_template_or_none(template):
-    """
-    Normalize a matched-filter template.
 
-    Returns
-    -------
-    template_norm : ndarray or None
-        Normalized template if its norm is finite and strictly positive.
-        None otherwise.
-    """
-    template = np.asarray(template, dtype=float)
-    norm2    = np.nansum(template**2)
-    if (not np.isfinite(norm2)) or (norm2 <= 0):
-        return None
-    return template / np.sqrt(norm2)
 
-def window_sums_1d(values, idx_lo, idx_hi):
+def get_star_mag(planet, band):
     """
-    Fast sums of a 1D array over many [idx_lo, idx_hi) windows.
-
-    Parameters
-    ----------
-    values : ndarray, shape (Nwave,)
-        1D array to integrate.
-    idx_lo, idx_hi : ndarray
-        Integer arrays with the same shape, defining integration windows (l0, Dl) for IFU or (l0, Dl) for imager.
-
-    Returns
-    -------
-    sums : ndarray
-        Sum of values[idx_lo:idx_hi] for each window.
+    Return the stellar magnitude in the requested photometric band.
+    Used to select/interpolate PCS AO/PSF performance.
     """
-    values = np.asarray(values)
-    if np.all(np.isfinite(values)):
-        v = values
-    else:
-        v = np.nan_to_num(values, nan=0.0, posinf=0.0, neginf=0.0)
-    cs    = np.empty(v.size + 1, dtype=v.dtype if np.issubdtype(v.dtype, np.floating) else float)
-    cs[0] = 0.0
-    np.cumsum(v, out=cs[1:])
-    return cs[idx_hi] - cs[idx_lo]
-
-def window_nanmax_1d(values, idx_lo, idx_hi):
-    """
-    Fast maximum of a 1D array over many [idx_lo, idx_hi) windows.
-    """
-    values = np.asarray(values, dtype=float)
-    out    = np.zeros(np.shape(idx_lo), dtype=float)
-    for ind in np.ndindex(out.shape):
-        lo = int(idx_lo[ind])
-        hi = int(idx_hi[ind])
-        if hi <= lo:
-            out[ind] = 0.0
+    colnames = getattr(planet, "colnames", None)
+    if colnames is None and getattr(planet, "table", None) is not None:
+        colnames = planet.table.colnames
+    if colnames is None:
+        colnames = getattr(getattr(planet, "dtype", None), "names", ()) or ()
+    band = str(band).strip()
+    normalized = {str(name).lower().replace("_", "").replace(" ", ""): name for name in colnames}
+    candidates = (f"Star{band}mag",)
+    for candidate in candidates:
+        key = candidate.lower().replace("_", "").replace(" ", "")
+        if key not in normalized:
             continue
-        v = values[lo:hi]
-        m = np.isfinite(v)
-        if np.any(m):
-            out[ind] = np.nanmax(v[m])
-        else:
-            out[ind] = 0.0
-    return out
-
-def window_sigma_al_spec_1d(g, norm2, idx_lo, idx_hi):
-    """
-    Compute the spectral-aliasing covariance term for all spectral windows.
-
-    Equivalent to compute_sigma_base_2_al_spec_fast(g[lo:hi] / sqrt(norm2))
-    for each valid window, up to floating-point rounding.
-    """
-    g         = np.nan_to_num(np.asarray(g), nan=0.0, posinf=0.0, neginf=0.0)
-    s0        = window_sums_1d(g**2, idx_lo, idx_hi)
-    s1        = window_sums_1d(g[:-1] * g[1:], idx_lo, np.maximum(idx_lo, idx_hi - 1))
-    s2        = window_sums_1d(g[:-2] * g[2:], idx_lo, np.maximum(idx_lo, idx_hi - 2))
-    numerator = s0 + 0.5 * s1 + (2.0 / 256.0) * s2
-    return np.divide(np.maximum(numerator, 0.0), norm2, out=np.zeros_like(norm2, dtype=float), where=np.isfinite(norm2) & (norm2 > 0))
-
-def get_valid_IFU_windows(R, l0, Dl, Nl_max, Nl_min=3):
-    """
-    Return the validity mask for the (R, l0, Dl) parameter grid.
-
-    The spectral sampling is the same as in process_IFU:
-    dln(lambda) = 1 / (2*R), corresponding to 2 pixels per
-    spectral resolution element.
-
-    Returns
-    -------
-    valid_windows_3D : bool array, shape (R, l0, Dl)
-    """
-    lmin = l0[:, None] - Dl[None, :] / 2
-    lmax = l0[:, None] + Dl[None, :] / 2
-    if np.any(lmin <= 0):
-        raise ValueError("IFU spectral windows must have positive wavelengths.")
-    # Same wavelength-grid origin as in the main IFU calculations.
-    lmin_model       = 0.98 * (l0.min() - Dl.max()/2)
-    lmax_model       = 1.02 * (l0.max() + Dl.max()/2)
-    valid_windows_3D = np.zeros((len(R), len(l0), len(Dl)), dtype=bool)
-    print(f"Valid windows: {Nl_min} <= Nl <= {Nl_max if Nl_max is not None else 'unlimited'}")
-    for i, res in enumerate(R):
-        dln        = 1.0 / (2.0 * res)
-        n          = int(np.floor(np.log(lmax_model/lmin_model)/dln)) + 1
-        wave_res   = lmin_model * np.exp(np.arange(n)*dln)
-        idx_lo     = np.searchsorted(wave_res, lmin, side="left")
-        idx_hi     = np.searchsorted(wave_res, lmax, side="right")
-        n_channels = idx_hi - idx_lo
-        valid      = n_channels >= Nl_min
-        if Nl_max is not None:
-            valid &= n_channels <= Nl_max
-        valid_windows_3D[i] = valid
-        print(f"R={res:.0f}: {np.count_nonzero(valid)}/{valid.size} valid configurations")
-    return valid_windows_3D
-
-def warmup_signal_noise_numba(dtype):
-    """
-    Compile/load the Numba covariance kernels before multiprocessing.
-    On Linux, the compiled functions are inherited by forked workers, which avoids
-    paying the compilation/loading overhead independently in every worker.
-    """
-    wave = np.linspace(1.0, 1.1, 32, dtype=dtype)
-    h    = np.ones((32, 1), dtype=dtype)
-    sep  = np.array([50.0 / (rad2arcsec * 1000.0)], dtype=dtype)
-    _    = compute_sigma_base_2_speck_numba(h=h, wave=wave, separation_rad=sep, D=38.54)
-    _    = compute_sigma_base_2_al_spat_numba(h=h, wave=wave, separation_rad=sep, pxscale_rad=1.0 / (rad2arcsec * 1000.0))
-    _    = compute_sigma_base_2_al_spec_fast(h=h)
+        value = planet[normalized[key]]
+        if np.any(np.ma.getmaskarray(value)):
+            continue
+        try:
+            value = float(value)
+        except (TypeError, ValueError):
+            continue
+        if np.isfinite(value):
+            return value
+    raise ValueError(f"Missing valid stellar {band}-band magnitude. Available columns: {list(colnames)}")
 
 
 
@@ -256,6 +115,10 @@ def warmup_signal_noise_numba(dtype):
 _IM_CTX  = None
 _IFU_CTX = None
 _SNR_CTX = None
+_MASK_CTX = None
+_PDET_CTX = None
+
+
 
 def init_worker_IM(ctx):
     global _IM_CTX
@@ -272,6 +135,8 @@ def init_worker_IM(ctx):
     _IM_CTX["sigma_bkg_2_out"]  = np.load(_IM_CTX["sigma_bkg_2_path"],  mmap_mode="r+")
     _IM_CTX["DIT_out"]          = np.load(_IM_CTX["DIT_path"],          mmap_mode="r+")
 
+
+
 def init_worker_IFU(ctx):
     global _IFU_CTX
     _IFU_CTX = ctx
@@ -287,6 +152,8 @@ def init_worker_IFU(ctx):
     _IFU_CTX["sigma_bkg_2_out"]       = np.load(_IFU_CTX["sigma_bkg_2_path"],       mmap_mode="r+")
     _IFU_CTX["DIT_out"]               = np.load(_IFU_CTX["DIT_path"],               mmap_mode="r+")
     _IFU_CTX["sigma_syst_base_2_out"] = np.load(_IFU_CTX["sigma_syst_base_2_path"], mmap_mode="r+")
+
+
 
 def init_worker_SNR(ctx):
     global _SNR_CTX
@@ -799,11 +666,11 @@ def process_IM(idx):
 # Function to be multiprocessed over planets
 def process_SNR(idx):
 
-    instru_type     = _SNR_CTX["instru_type"]
-    exposure_time   = _SNR_CTX["exposure_time"]
-    A_FWHM          = _SNR_CTX["A_FWHM"]
-    sigma_m         = _SNR_CTX["sigma_m_broadcast"]
-    dtype           = _SNR_CTX["dtype"]
+    instru_type   = _SNR_CTX["instru_type"]
+    exposure_time = _SNR_CTX["exposure_time"]
+    A_FWHM        = _SNR_CTX["A_FWHM"]
+    sigma_m       = _SNR_CTX["sigma_m_broadcast"]
+    dtype         = _SNR_CTX["dtype"]
 
     # --- Read one planet slice ---
     signal       = _SNR_CTX["signal_planets"][idx]       # [e-/FWHM/DIT]
@@ -815,32 +682,23 @@ def process_SNR(idx):
 
     # Detector parameters are arrays of shape (N_l0).  They are broadcast onto the
     # parameter grid.  The l0 axis is axis 1 for IFU arrays and axis 0 for imager arrays.
-    N_l0    = _SNR_CTX["N_l0"]
-    l0_axis = _SNR_CTX["l0_axis"]
+    N_l0              = _SNR_CTX["N_l0"]
+    l0_axis           = _SNR_CTX["l0_axis"]
     shape_l0          = [1] * DIT.ndim
     shape_l0[l0_axis] = N_l0
-    shape_l0           = tuple(shape_l0)
-    RON0     = np.asarray(_SNR_CTX["RON0"],    dtype=dtype).reshape(shape_l0)
-    RON_lim  = np.asarray(_SNR_CTX["RON_lim"], dtype=dtype).reshape(shape_l0)
-    DC0      = np.asarray(_SNR_CTX["DC0"],     dtype=dtype).reshape(shape_l0)
-    min_DIT  = np.asarray(_SNR_CTX["min_DIT"], dtype=dtype).reshape(shape_l0)
+    shape_l0          = tuple(shape_l0)
+    RON0              = np.asarray(_SNR_CTX["RON0"],    dtype=dtype).reshape(shape_l0)
+    RON_lim           = np.asarray(_SNR_CTX["RON_lim"], dtype=dtype).reshape(shape_l0)
+    DC0               = np.asarray(_SNR_CTX["DC0"],     dtype=dtype).reshape(shape_l0)
+    min_DIT           = np.asarray(_SNR_CTX["min_DIT"], dtype=dtype).reshape(shape_l0)
+    is_UTR            = np.asarray(_SNR_CTX["is_UTR"],   dtype=bool).reshape(shape_l0)
 
     # --- Number of DIT ---
     N_DIT = np.floor(exposure_time / DIT).astype(dtype)
     N_DIT = np.clip(N_DIT, 1, None)
 
-    # --- Number of reads ---
-    N_read = np.floor(DIT / min_DIT).astype(np.int32)
-
-    # --- Effective RON variance in UTR mode in [e-/FWHM/DIT]**2 ---
-    RON0_grid    = np.broadcast_to(RON0, DIT.shape)
-    RON_lim_grid = np.broadcast_to(RON_lim, DIT.shape)
-    sigma_RON_2  = (RON0_grid**2).astype(dtype).copy()
-    m            = (N_read >= 2)
-    if np.any(m):
-        n_read         = N_read[m].astype(dtype)
-        sigma_RON_2[m] = (RON0_grid[m]**2 * 12 * (n_read - 1) / (n_read * (n_read + 1)) + RON_lim_grid[m]**2).astype(dtype)
-    sigma_RON_2 *= A_FWHM
+    # --- Effective RON variance according to detector readout mode in [e-/FWHM/DIT]**2 ---
+    sigma_RON_2 = sigma_RON_2_from_DIT(DIT=DIT, min_DIT=min_DIT, RON0=RON0, RON_lim=RON_lim, A_FWHM=A_FWHM, dtype=dtype, is_UTR=is_UTR)
 
     # --- Dark current variance (Poisson) in [e-/FWHM/DIT]**2 ---
     sigma_DC_2 = (DC0 * DIT * A_FWHM).astype(dtype) # [e-/FWHM/DIT]**2
@@ -872,7 +730,7 @@ def process_SNR(idx):
 
 
 
-def get_SNR(instru, instru_type, post_processing, exposure_time, min_DIT, RON0, RON_lim, DC0, A_FWHM, Rc, filter_type, signal_planets, sigma_halo_2_planets, sigma_bkg_2_planets, sigma_syst_base_2_planets, DIT_planets, R, Dl, sigma_m, sim_dir, suffix, dtype):
+def get_SNR(instru, instru_type, post_processing, exposure_time, min_DIT, RON0, RON_lim, is_UTR, DC0, A_FWHM, Rc, filter_type, signal_planets, sigma_halo_2_planets, sigma_bkg_2_planets, sigma_syst_base_2_planets, DIT_planets, R, Dl, sigma_m, sim_dir, suffix, dtype):
 
     print("\nComputing SNR from FastYield data...\n")
 
@@ -908,7 +766,7 @@ def get_SNR(instru, instru_type, post_processing, exposure_time, min_DIT, RON0, 
         l0_axis                = 0
         sigma_syst_base_2_path = None
     N_l0    = len(RON0)
-    snr_ctx = dict(instru_type=instru_type, post_processing=post_processing, exposure_time=dtype(exposure_time), min_DIT=dtype(min_DIT), RON0=dtype(RON0), RON_lim=dtype(RON_lim), DC0=dtype(DC0), A_FWHM=dtype(A_FWHM), sigma_m_broadcast=sigma_m_broadcast, signal_path=str(signal_path), sigma_halo_2_path=str(sigma_halo_2_path), sigma_bkg_2_path=str(sigma_bkg_2_path), DIT_path=str(DIT_path), sigma_syst_base_2_path=str(sigma_syst_base_2_path) if sigma_syst_base_2_path is not None else None, SNR_path=str(SNR_path), shape_SNR=shape_SNR, dtype=np.dtype(dtype).str, N_l0=N_l0, l0_axis=l0_axis)
+    snr_ctx = dict(instru_type=instru_type, post_processing=post_processing, exposure_time=dtype(exposure_time), min_DIT=dtype(min_DIT), RON0=dtype(RON0), RON_lim=dtype(RON_lim), is_UTR=is_UTR, DC0=dtype(DC0), A_FWHM=dtype(A_FWHM), sigma_m_broadcast=sigma_m_broadcast, signal_path=str(signal_path), sigma_halo_2_path=str(sigma_halo_2_path), sigma_bkg_2_path=str(sigma_bkg_2_path), DIT_path=str(DIT_path), sigma_syst_base_2_path=str(sigma_syst_base_2_path) if sigma_syst_base_2_path is not None else None, SNR_path=str(SNR_path), shape_SNR=shape_SNR, dtype=np.dtype(dtype).str, N_l0=N_l0, l0_axis=l0_axis)
     if sys.platform.startswith(("win", "darwin")):
         ctx_mp = mp.get_context("spawn")
     else:
@@ -928,7 +786,23 @@ def get_SNR(instru, instru_type, post_processing, exposure_time, min_DIT, RON0, 
 # Function for computing detection mask
 # -------------------------------------
 
-def get_mask_detections(SNR_planets, SNR_thr, sim_dir, suffix, target_chunk_mb=2048):
+# Multiprocessing workers for independent planet slices
+def init_worker_mask(ctx):
+    global _MASK_CTX
+    _MASK_CTX = {"SNR": np.load(ctx["SNR_path"], mmap_mode="r"), "mask": np.load(ctx["mask_path"], mmap_mode="r+"), "SNR_thr": ctx["SNR_thr"]}
+
+
+def process_mask(idx):
+    _MASK_CTX["mask"][idx] = _MASK_CTX["SNR"][idx] >= _MASK_CTX["SNR_thr"]
+    return idx
+
+
+def get_mask_detections(SNR_planets, SNR_thr, sim_dir, suffix, target_chunk_mb=2048, nproc=1, chunksize=8, parallel_min_mb=256):
+    """Build the detection mask on disk, optionally parallelized over planets.
+
+    Use the existing vectorized/chunked NumPy path for small volumes, since
+    reading and writing the arrays is mostly limited by memory/disk bandwidth.
+    """
 
     shape_full = SNR_planets.shape
     shape_grid = shape_full[1:]
@@ -950,10 +824,21 @@ def get_mask_detections(SNR_planets, SNR_thr, sim_dir, suffix, target_chunk_mb=2
     target_bytes     = int(target_chunk_mb * 1024**2)
     chunk_size       = int(max(1, target_bytes // max(bytes_per_planet, 1)))
 
+    # Limit concurrent memory-mapped I/O; multiprocessing is not always faster here.
+    workers = min(max(1, int(nproc)), N_PT, 4)
+    use_parallel = workers > 1 and isinstance(SNR_planets, np.memmap) and bytes_per_planet * N_PT >= parallel_min_mb * 1024**2
+
     print()
-    for i0 in tqdm(range(0, N_PT, chunk_size), desc="Building mask_detections"):
-        i1                     = min(i0 + chunk_size, N_PT)
-        mask_detections[i0:i1] = SNR_planets[i0:i1] >= SNR_thr
+    if use_parallel:
+        mask_ctx = {"SNR_path": str(SNR_planets.filename), "mask_path": str(mask_detections.filename), "SNR_thr": float(SNR_thr)}
+        ctx_mp = mp.get_context("spawn" if sys.platform.startswith(("win", "darwin")) else "fork")
+        with ctx_mp.Pool(processes=workers, initializer=init_worker_mask, initargs=(mask_ctx,)) as pool:
+            for _ in tqdm(pool.imap_unordered(process_mask, range(N_PT), chunksize=chunksize), total=N_PT, desc="Building mask_detections"):
+                pass
+    else:
+        for i0 in tqdm(range(0, N_PT, chunk_size), desc="Building mask_detections"):
+            i1                     = min(i0 + chunk_size, N_PT)
+            mask_detections[i0:i1] = SNR_planets[i0:i1] >= SNR_thr
 
     mask_detections.flush()
     return mask_detections
@@ -964,7 +849,35 @@ def get_mask_detections(SNR_planets, SNR_thr, sim_dir, suffix, target_chunk_mb=2
 # Function for computing detection probability
 # --------------------------------------------
 
-def get_Pdet(mask_detections, FoV, p0_FoV, dtype, indices=None, target_chunk_mb=2048, jump_before_tqdm=True, valid_windows_3D=None):
+# Each worker accumulates a separate FoV-entry bucket into a shared disk memmap.
+def init_worker_Pdet(ctx):
+    global _PDET_CTX
+    _PDET_CTX = dict(ctx)
+    _PDET_CTX["mask"]    = np.load(ctx["mask_path"], mmap_mode="r")
+    _PDET_CTX["buckets"] = np.load(ctx["buckets_path"], mmap_mode="r+")
+
+
+def process_Pdet_bucket(p):
+    ctx        = _PDET_CTX
+    indices    = ctx["groups"][p]
+    chunk_size = ctx["chunk_size"]
+    bucket     = np.zeros(ctx["shape_grid"], dtype=np.uint32)
+
+    # Only one FoV bucket is held in memory per worker. No worker writes another's bucket.
+    for i0 in range(0, len(indices), chunk_size):
+        idx     = indices[i0:i0 + chunk_size]
+        bucket += np.sum(ctx["mask"][idx], axis=0, dtype=np.uint32)
+
+    ctx["buckets"][p] = bucket
+    return p
+
+
+def get_Pdet(mask_detections, FoV, p0_FoV, dtype, indices=None, target_chunk_mb=2048, jump_before_tqdm=True, valid_windows_3D=None, nproc=1, parallel_min_mb=64):
+    """Compute Pdet with an optional FoV-bucket multiprocessing path.
+
+    Results are normalized by the entire selected population, including planets
+    outside the FoV. A sequential fallback preserves the original algorithm.
+    """
     # If no subset is provided, all planets are included
     if indices is None:
         indices = np.arange(len(p0_FoV), dtype=np.int32)
@@ -980,25 +893,62 @@ def get_Pdet(mask_detections, FoV, p0_FoV, dtype, indices=None, target_chunk_mb=
             Pdet[~valid_windows_3D] = np.nan
         return Pdet
 
-    # buckets[..., p] = sum of detection masks for planets with gating index p0 = p
-    buckets = np.zeros(shape_grid + (N_FoV,), dtype=np.uint32)
-
+    # A selected population can be empty; keep the output shape unchanged.
     if N_PT == 0:
-        return apply_validity_mask(buckets.astype(dtype))
+        return apply_validity_mask(np.zeros(shape_grid + (N_FoV,), dtype=dtype))
 
     # Precompute FoV gating once
     p0_sel = p0_FoV[indices]
     valid  = (p0_sel < N_FoV)
 
     if not np.any(valid):
-        return apply_validity_mask(buckets.astype(dtype))
+        return apply_validity_mask(np.zeros(shape_grid + (N_FoV,), dtype=dtype))
 
     indices_valid = indices[valid]
     p0_valid      = p0_sel[valid]
 
+    # Independent FoV-entry groups can be reduced in parallel with no write conflicts.
+    # Keep small subsets and ordinary NumPy arrays on the original sequential path.
+    grid_size    = int(np.prod(shape_grid, dtype=np.int64))
+    groups       = [indices_valid[p0_valid == p] for p in range(N_FoV)]
+    active       = [p for p, group in enumerate(groups) if len(group) > 0]
+    workers      = min(max(1, int(nproc)), len(active), 4)
+    use_parallel = workers > 1 and isinstance(mask_detections, np.memmap) and np.all(p0_valid >= 0) and len(indices_valid) * grid_size >= parallel_min_mb * 1024**2
+
+    if use_parallel:
+        # Each worker holds one uint32 grid plus input chunks capped near 128 MiB
+        # (or one full planet slice when a single slice exceeds this limit).
+        worker_chunk_mb   = min(target_chunk_mb, 128)
+        worker_chunk_size = max(1, int(worker_chunk_mb * 1024**2 // max(grid_size, 1)))
+
+        if jump_before_tqdm:
+            print()
+        # Keep temporary buckets next to the original memmap, and clean on exit.
+        with TemporaryDirectory(prefix="tmp_Pdet_", dir=str(Path(mask_detections.filename).parent)) as tmpdir:
+            buckets_path = Path(tmpdir) / "buckets.npy"
+            buckets      = np.lib.format.open_memmap(buckets_path, mode="w+", dtype=np.uint32, shape=(N_FoV,) + shape_grid)
+            buckets[:]   = 0
+            buckets.flush()
+
+            pdet_ctx = {"mask_path": str(mask_detections.filename), "buckets_path": str(buckets_path), "groups": groups, "shape_grid": shape_grid, "chunk_size": worker_chunk_size}
+            ctx_mp   = mp.get_context("spawn" if sys.platform.startswith(("win", "darwin")) else "fork")
+            with ctx_mp.Pool(processes=workers, initializer=init_worker_Pdet, initargs=(pdet_ctx,)) as pool:
+                for _ in tqdm(pool.imap_unordered(process_Pdet_bucket, active, chunksize=1), total=len(active), desc="Computing detection probability by FoV bins"):
+                    pass
+
+            # A planet entering at p0 contributes to every FoV bin >= p0.
+            # uint64 accumulation is consistent with NumPy's default cumsum on uint32.
+            counts = np.cumsum(buckets, axis=0, dtype=np.uint64)
+            Pdet   = np.ascontiguousarray(np.moveaxis(counts, 0, -1) / N_PT, dtype=dtype)
+            del counts, buckets
+
+        return apply_validity_mask(Pdet)
+
+    # Sequential fallback: buckets[..., p] accumulate planets first visible at p.
+    buckets = np.zeros(shape_grid + (N_FoV,), dtype=np.uint32)
+
     # Approximate chunk size from memory budget:
     # only one boolean chunk is materialized now
-    grid_size        = int(np.prod(shape_grid, dtype=np.int64))
     bytes_per_bool   = np.dtype(bool).itemsize
     bytes_per_planet = grid_size * bytes_per_bool
     target_bytes     = int(target_chunk_mb * 1024**2)
@@ -1307,3 +1257,270 @@ def save_marginalized_planet_table(planet_table, signal, sigma_fund, sigma_syst,
     print(f"\nMarginalized PCS planet table saved to:\n{output_path}")
 
     return output_path
+
+
+
+# --------------------------------------------
+# Plot/prints helpers
+# --------------------------------------------
+
+# Marginalized plots
+def convert_Pdet_to_plot_quantity(Pdet_curve, N_PT, gain, ymax_panel=None):
+    "Normalize to the panel maximum or convert to yield"
+    y = np.asarray(Pdet_curve, dtype=float)
+    if gain:
+        y = 100.0*y/ymax_panel if ymax_panel is not None and np.isfinite(ymax_panel) and ymax_panel > 0 else np.zeros_like(y)
+    else:
+        y = y*N_PT
+    return y
+
+def get_panel_ymax(curves):
+    values = np.concatenate([np.asarray(curve, dtype=float).ravel() for curve in curves]) if curves else np.array([])
+    return np.nanmax(values) if np.any(np.isfinite(values)) else None
+
+def set_log_decade_ticks(axis, vmin, vmax, max_labels=4):
+    # Major ticks at every decade (the default LogLocator drops most of them on small panels spanning many decades),
+    # with labels only every few decades so that they fit in the panel
+    exps = np.arange(np.ceil(np.log10(vmin)), np.floor(np.log10(vmax)) + 1).astype(int)
+    step = max(1, int(np.ceil(len(exps) / max_labels)))
+    axis.set_major_locator(FixedLocator(10.0**exps))
+    axis.set_major_formatter(FuncFormatter(lambda v, pos: rf"$\mathdefault{{10^{{{round(np.log10(v))}}}}}$" if round(np.log10(v)) % step == 0 else ""))
+    axis.set_minor_locator(NullLocator())
+
+
+
+# ----------------------------------------------------
+# Population plots: precomputed weights and parallelism
+# ----------------------------------------------------
+
+def format_range(r):
+    return f"{r[0]:g}" if np.isclose(r[0], r[1]) else f"[{r[0]:g}, {r[1]:g}]"
+
+
+
+def format_value(value):
+    if value is None:
+        return "None"
+    value = np.asarray(value).ravel()
+    return f"{value[0]:g}" if value.size == 1 else f"[{value[0]:g}, {value[1]:g}]"
+
+
+
+def print_range(key, value, used=None, warning=""):
+    used_str = f"-> {used}" if used is not None else ""
+    print(f"  {key+'_plot':<18} = {format_value(value):<14} {used_str:<14} {warning}")
+
+
+
+def prepare_population_axis(axis, value, prior, name, verbose=False):
+    """
+    Select interpolation or marginalization weights for a population parameter.
+
+    Scalar     : fixed value, linearly interpolated between adjacent nodes.
+    [min, max] : weighted marginalization over the requested interval.
+    None       : marginalize over the full simulated parameter range.
+
+    Requests outside the explored range are cropped with a warning. A singleton
+    axis is always fixed, independently of the requested value.
+    """
+    axis = np.asarray(axis, dtype=float)
+    if axis.ndim != 1 or axis.size == 0 or not np.all(np.isfinite(axis)) or np.any(np.diff(axis) <= 0):
+        raise ValueError(f"Invalid population axis for {name}.")
+
+    # A singleton dimension was fixed by the instrument concept itself.
+    if axis.size == 1:
+        fixed_value = float(axis[0])
+        requested   = np.atleast_1d(value).ravel() if value is not None else np.array([])
+        changed =    value is not None and (requested.size != 1 or not np.isclose(requested[0], fixed_value))
+        if verbose:
+            print_range(name, value, f"{fixed_value:g}" if changed else None, f"(WARNING: parameter fixed at {fixed_value:g})")
+        return np.array([0], dtype=int), np.array([1.0]), True, fixed_value
+
+    # None or invalid selections fall back to the full simulated axis.
+    original = (axis[0], axis[-1]) if value is None else value
+    try:
+        requested = np.asarray(original, dtype=float).ravel()
+    except (TypeError, ValueError):
+        requested = np.array([])
+    
+    warning = ""
+    if requested.size not in (1, 2) or not np.all(np.isfinite(requested)):
+        requested = np.array([axis[0], axis[-1]], dtype=float)
+        warning   = "(WARNING: expected scalar or [min, max]; full axis used)"
+    if requested.size == 1:
+        requested = np.repeat(requested, 2)
+    if requested[0] > requested[1]:
+        requested = requested[::-1]
+        warning   = "(WARNING: reversed range reordered)"
+
+    used    = np.clip(requested, axis[0], axis[-1])
+    cropped = not np.allclose(requested, used, rtol=0, atol=1e-12*max(1., abs(axis[0]), abs(axis[-1])))
+    if cropped:
+        warning = f"(WARNING: cropped to [{axis[0]:g}, {axis[-1]:g}])"
+    pmin, pmax = map(float, used)
+    if verbose:
+        changed = value is None or cropped or warning.startswith("(WARNING: expected") or warning.startswith("(WARNING: reversed")
+        print_range(name, value, format_range((pmin, pmax)) if changed else None, warning)
+
+    tol = 1e-10 * max(1.0, abs(axis[0]), abs(axis[-1]))
+    if np.isclose(pmin, pmax, rtol=0, atol=tol):
+        x0    = 0.5 * (pmin + pmax)
+        exact = np.flatnonzero(np.isclose(axis, x0, rtol=0, atol=tol))
+        if exact.size:
+            return np.array([int(exact[0])]), np.array([1.0]), True, x0
+        i1    = int(np.searchsorted(axis, x0))
+        i0    = i1 - 1
+        alpha = (x0 - axis[i0]) / (axis[i1] - axis[i0])
+        return np.array([i0, i1]), np.array([1.0 - alpha, alpha]), True, x0
+
+    idx, weights = get_axis_weights_in_range(axis=axis, pmin=pmin, pmax=pmax, prior=prior)
+    weights      = np.asarray(weights, dtype=float)
+    weights     /= np.sum(weights)
+    return np.asarray(idx, dtype=int), weights, False, (pmin, pmax)
+
+
+
+_POP_CTX = None
+
+def init_worker_population(ctx):
+    """Open the raw per-planet memmaps once in each worker."""
+    global _POP_CTX
+    _POP_CTX = ctx
+    for key in ("signal", "halo", "background", "DIT", "systematics"):
+        path = ctx.get(f"{key}_path")
+        if path is not None:
+            _POP_CTX[key] = np.load(path, mmap_mode="r")
+
+
+
+def process_population(idx):
+    """Return the mean SNR and five noise variances for one planet."""
+    ctx              = _POP_CTX
+    indices, weights = ctx["indices"], ctx["weights"]
+    rest_names       = ("Dl", "r_WFE", "IWA", "trans_instru")
+    rest_idx         = [indices[name] for name in rest_names]
+    rest_weight      = ctx["rest_weight"]
+    sigma_m_percent  = ctx["sigma_m_percent"]
+    sigma_m_2        = (sigma_m_percent / 100.0)**2
+    vis              = ctx["visibility"][idx]
+
+    if vis <= 0:
+        return idx, (0.0, np.nan, np.nan, np.nan, np.nan, np.nan)
+
+    numerator   = np.zeros(6, dtype=float)
+    denominator = 0.0
+
+    R_idx     = indices["R"] if ctx["instru_type"] == "IFU" else [None]
+    R_weights = weights["R"] if ctx["instru_type"] == "IFU" else [1.0]
+    for ir, wr in zip(R_idx, R_weights):
+        for il0, wl0 in zip(indices["l0"], weights["l0"]):
+            position   = (idx, int(ir), int(il0)) if ir is not None else (idx, int(il0))
+            selection  = np.ix_(*rest_idx)
+            signal     = np.asarray(ctx["signal"][position][selection], dtype=float)
+            halo       = np.asarray(ctx["halo"][position][selection], dtype=float)
+            background = np.asarray(ctx["background"][position][selection], dtype=float)
+            DIT        = np.asarray(ctx["DIT"][position][selection], dtype=float)
+            if ctx["instru_type"] == "IFU":
+                syst_base      = np.asarray(ctx["systematics"][position][selection], dtype=float)
+                spectral_valid = ctx["valid_windows"][int(ir), int(il0), indices["Dl"]][:, None, None, None, None]
+            elif ctx["instru_type"] == "imager":
+                syst_base      = halo**2
+                spectral_valid = True
+
+            valid_DIT = np.isfinite(DIT) & (DIT > 0)
+            DIT_safe  = np.where(valid_DIT, DIT, 1.0)
+            N_DIT     = np.clip(np.floor(ctx["exposure_time"] / DIT_safe), 1, None)
+            ron       = sigma_RON_2_from_DIT(DIT=DIT_safe, min_DIT=ctx["min_DIT"][il0], RON0=ctx["RON0"][il0], RON_lim=ctx["RON_lim"][il0], A_FWHM=ctx["A_FWHM"], dtype=float, is_UTR=ctx["is_UTR"][il0])
+            dark      = ctx["DC0"][il0] * DIT_safe * ctx["A_FWHM"]
+
+            vhalo    = N_DIT * halo
+            vbkg     = N_DIT * background
+            vron     = N_DIT * ron
+            vdark    = N_DIT * dark
+            vsyst    = N_DIT[..., None]**2 * syst_base[..., None] * sigma_m_2
+            vfund    = vhalo + vbkg + vron + vdark
+            variance = vfund[..., None] + vsyst
+            with np.errstate(divide="ignore", invalid="ignore", over="ignore"):
+                snr = N_DIT[..., None] * signal[..., None] / np.sqrt(variance)
+
+            valid = valid_DIT[..., None] & spectral_valid & np.isfinite(snr) & np.isfinite(variance) & (variance > 0)
+            if not np.any(valid):
+                continue
+            w             = (wr * wl0) * rest_weight
+            valid_weights = np.where(valid, w, 0.0)
+            denominator  += np.sum(valid_weights, dtype=float)
+            numerator[0] += np.sum(np.where(valid, snr, 0.0) * valid_weights, dtype=float)
+            for j, v in enumerate((vhalo, vbkg, vron, vdark), start=1):
+                numerator[j] += np.sum(np.where(valid, v[..., None], 0.0) * valid_weights, dtype=float)
+            numerator[5] += np.sum(np.where(valid, vsyst, 0.0) * valid_weights, dtype=float)
+
+    if denominator <= 0:
+        return idx, (np.nan, np.nan, np.nan, np.nan, np.nan, np.nan)
+    numerator    /= denominator
+    numerator[0] *= vis
+    return idx, tuple(numerator)
+
+
+
+def get_population_results(instru_type, signal_planets, sigma_halo_2_planets, sigma_bkg_2_planets, sigma_syst_base_2_planets, DIT_planets, separation_planets, axes, prepared, detector_l0, RON0, RON_lim, DC0, min_DIT, is_UTR, exposure_time, A_FWHM, valid_windows_3D=None, nproc=None, chunksize=8):
+    """Compute population diagnostics without building the full SNR hypercube."""
+    names   = ("R", "l0", "Dl", "r_WFE", "IWA", "trans_instru", "sigma_m", "FoV") if instru_type == "IFU" else ("l0", "Dl", "r_WFE", "IWA", "trans_instru", "sigma_m", "FoV")
+    axes    = dict(zip(names, axes))
+    indices = {name: prepared[name][0] for name in names}
+    weights = {name: prepared[name][1] for name in names}
+
+    # Keep the legacy interpolation behavior, but identify mixed detector families.
+    if prepared["l0"][2] and len(set(np.asarray(detector_l0)[indices["l0"]])) > 1:
+        print("WARNING: l0_plot interpolation mixes two detector technologies. The resulting SNR is only an approximation.")
+
+    if instru_type == "IFU":
+        if valid_windows_3D is None:
+            raise ValueError("valid_windows_3D is required for IFU population diagnostics.")
+        r_idx, l_idx, d_idx = (indices[k] for k in ("R", "l0", "Dl"))
+        submask             = np.asarray(valid_windows_3D)[np.ix_(r_idx, l_idx, d_idx)]
+        positive_weights    = (weights["R"][:, None, None] * weights["l0"][None, :, None] * weights["Dl"][None, None, :]) > 0
+        if not np.any(submask & positive_weights):
+            print("WARNING: no valid IFU spectral configurations for the requested *_plot values; population SNRs will be undefined.")
+            count = len(separation_planets)
+            undefined = np.full(count, np.nan, dtype=float)
+            return dict(SNR=undefined.copy(), dominant_noise=np.full(count, "Unknown", dtype=object), var_halo=undefined.copy(), var_bkg=undefined.copy(), var_RON=undefined.copy(), var_DC=undefined.copy(), var_syst=undefined.copy())
+        if np.any(~submask & positive_weights):
+            print("WARNING: some IFU spectral interpolation/marginalization nodes are invalid and will be excluded with weight renormalization.")
+
+    if prepared["FoV"][2]:
+        visibility = (2 * np.asarray(separation_planets, dtype=float) <= float(prepared["FoV"][3])).astype(float)
+    else:
+        fov_values = axes["FoV"][indices["FoV"]]
+        visibility = np.sum(weights["FoV"][:, None] * (2 * np.asarray(separation_planets)[None, :] <= fov_values[:, None]), axis=0)
+
+    rest_names  = ("Dl", "r_WFE", "IWA", "trans_instru", "sigma_m")
+    rest_shape  = tuple(len(indices[name]) for name in rest_names)
+    rest_weight = np.ones(rest_shape, dtype=float)
+    for dim, name in enumerate(rest_names):
+        shape        = [1] * len(rest_names)
+        shape[dim]   = len(indices[name])
+        rest_weight *= weights[name].reshape(shape)
+
+    ctx       = dict(instru_type=instru_type, exposure_time=float(exposure_time), A_FWHM=float(A_FWHM), indices=indices, weights=weights, rest_weight=rest_weight, sigma_m_percent=np.asarray(axes["sigma_m"])[indices["sigma_m"]], visibility=visibility, valid_windows=valid_windows_3D, RON0=np.asarray(RON0, dtype=float), RON_lim=np.asarray(RON_lim, dtype=float), DC0=np.asarray(DC0, dtype=float), min_DIT=np.asarray(min_DIT, dtype=float), is_UTR=np.asarray(is_UTR, dtype=bool), signal_path=str(signal_planets.filename), halo_path=str(sigma_halo_2_planets.filename), background_path=str(sigma_bkg_2_planets.filename), DIT_path=str(DIT_planets.filename), systematics_path=str(sigma_syst_base_2_planets.filename) if instru_type == "IFU" else None)
+    n_planets = len(separation_planets)
+    results   = np.full((n_planets, 6), np.nan, dtype=float)
+    workers   = max(1, min(n_planets, (cpu_count() - 3 if nproc is None else nproc)))
+    if workers == 1:
+        init_worker_population(ctx)
+        for i in tqdm(range(n_planets), desc="Computing population diagnostics"):
+            idx, values  = process_population(i)
+            results[idx] = values
+    else:
+        mp_ctx = mp.get_context("spawn" if sys.platform.startswith(("win", "darwin")) else "fork")
+        with mp_ctx.Pool(processes=workers, initializer=init_worker_population, initargs=(ctx,)) as pool:
+            for idx, values in tqdm(pool.imap_unordered(process_population, range(n_planets), chunksize=chunksize), total=n_planets, desc="Computing population diagnostics"):
+                results[idx] = values
+
+    labels          = np.array(["Stellar halo", "Background", "Read noise", "Dark current", "Systematics"], dtype=object)
+    noise           = results[:, 1:]
+    known           = np.any(np.isfinite(noise), axis=1) & (visibility > 0)
+    dominant        = np.full(n_planets, "Unknown", dtype=object)
+    dominant[known] = labels[np.nanargmax(noise[known], axis=1)]
+    return dict(SNR=results[:, 0], dominant_noise=dominant, var_halo=results[:, 1], var_bkg=results[:, 2], var_RON=results[:, 3], var_DC=results[:, 4], var_syst=results[:, 5])
+
+
