@@ -84,9 +84,9 @@ def main():
     detector = "PCS_visNIR_conservative"
 
     # --- Paths ---
-    instru_dir = get_sim_data_path() / instru
-    sim_dir    = instru_dir / "FastYield_simulations"
-    psf_dir    = instru_dir / "PSF_simulations"
+    instru_dir = get_sim_data_path() / "ELT" / instru
+    sim_dir    = instru_dir / "FastYield_outputs"
+    psf_dir    = instru_dir / "PSF_inputs"
     sim_dir.mkdir(parents=True, exist_ok=True)
 
     # --- Instrument concept ---
