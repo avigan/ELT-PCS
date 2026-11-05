@@ -85,7 +85,10 @@ def main():
 
     # --- Paths ---
     instru_dir = get_sim_data_path() / instru
-    sim_dir    = instru_dir / "FastYield_simulations"
+    if os.getlogin() == "avigan":
+        sim_dir    = Path("/Users/avigan/data/PCS/")
+    else:
+        sim_dir    = instru_dir / "FastYield_simulations"
     psf_dir    = instru_dir / "PSF_simulations"
     sim_dir.mkdir(parents=True, exist_ok=True)
 
@@ -135,7 +138,7 @@ def main():
     # IWA_min, IWA_max     = 1.0, 5.0
 
     # --- Plots configuration ---
-    plot_global_results = True
+    plot_global_results = False
     plot_populations    = True
 
     # Definition of the standard photometric bands
@@ -186,7 +189,7 @@ def main():
     # "obs"  : observationnal space (contrast vs. angular separation)
     # "phys" : physical space (mass vs. projected semi-major axis)
     # "both" : combine the plots in two panels
-    planet_population_space = 'phys'
+    planet_population_space = 'obs'
 
     # --- IFU parameters space to explore ---
     if instru_type == "IFU":
