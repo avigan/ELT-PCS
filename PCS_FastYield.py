@@ -40,7 +40,7 @@ from multiprocessing import cpu_count
 from pathlib import Path
 import sys
 import gc
-
+import getpass
 
 
 # Parameters for multiprocessing
@@ -85,7 +85,7 @@ def main():
 
     # --- Paths ---
     instru_dir = get_sim_data_path() / instru
-    if os.getlogin() == "avigan":
+    if getpass.getuser() == "avigan":
         sim_dir    = Path("/Users/avigan/data/PCS/")
     else:
         sim_dir    = instru_dir / "FastYield_simulations"
@@ -138,7 +138,7 @@ def main():
     # IWA_min, IWA_max     = 1.0, 5.0
 
     # --- Plots configuration ---
-    plot_global_results = False
+    plot_global_results = True
     plot_populations    = True
 
     # Definition of the standard photometric bands
