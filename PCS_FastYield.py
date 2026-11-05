@@ -86,10 +86,11 @@ def main():
     # --- Paths ---
     instru_dir = get_sim_data_path() / instru
     if getpass.getuser() == "avigan":
-        sim_dir    = Path("/Users/avigan/data/PCS/")
+        sim_dir = Path("/Users/avigan/data/PCS/")
+        psf_dir = instru_dir / "PSF_simulations"
     else:
-        sim_dir    = instru_dir / "FastYield_simulations"
-    psf_dir    = instru_dir / "PSF_simulations"
+        sim_dir = instru_dir / "FastYield_outputs"
+        psf_dir = instru_dir / "PSF_inputs"
     sim_dir.mkdir(parents=True, exist_ok=True)
 
     # --- Instrument concept ---

@@ -37,6 +37,7 @@ from fastyield.config import rad2arcsec, get_sim_data_path, lmin_bands, lmax_ban
 from fastyield.utils import interp_extrap_sep, build_PSF_grid, add_if_necessary, plot_profiles
 
 
+
 # %%
 # =============================================================================
 # USER PARAMETERS
@@ -70,7 +71,7 @@ def resolve_summary_dir(path):
     raise FileNotFoundError(f"SUMMARY input not found: {path}")
 
 summary_dir = resolve_summary_dir(SUMMARY_INPUT)
-output_dir  = get_sim_data_path() / instru / "PSF_simulations"
+output_dir  = get_sim_data_path() / instru / "PSF_inputs"
 output_dir.mkdir(parents=True, exist_ok=True)
 
 # Output ranges: intentionally kept identical to the ranges currently hard-coded
