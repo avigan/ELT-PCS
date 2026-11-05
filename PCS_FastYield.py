@@ -96,8 +96,8 @@ def main():
     # --- Instrument concept ---
     # One YAML file per concept in instrument_concepts/ (ifu_global, imager_global, concept_A_highres_vis_ifu, ...)
     # concept_name       = "ifu_global"
-    concept_name       = "imager_global"
-    # concept_name       = "concept_A_highres_vis_ifu_band=VRIz"
+    # concept_name       = "imager_global"
+    concept_name       = "concept_A_highres_vis_ifu_band=VRIz"
     # concept_name       = "concept_Ab_highres_nir_ifu_band=zYJ"
     # concept_name       = "concept_B_medres_nir_ifu"
     instrument_concept = fyh.load_instrument_concept(concept_name)
@@ -132,11 +132,11 @@ def main():
     IWA_ref   = 2.4 # [lambda0_band/D], see PSF data
 
     # Nominal PCS configuration. For sensitivity studies, vary within the FITS ranges.
-    r_WFE_min, r_WFE_max = r_WFE_ref, r_WFE_ref
+    # r_WFE_min, r_WFE_max = r_WFE_ref, r_WFE_ref
     IWA_min, IWA_max     = IWA_ref, IWA_ref
 
     # Exploratory (extrapolated) ranges:
-    # r_WFE_min, r_WFE_max = 0.5, 2.0
+    r_WFE_min, r_WFE_max = 0.5, 2.0
     # IWA_min, IWA_max     = 1.0, 5.0
 
     # --- Plots configuration ---
@@ -1066,6 +1066,7 @@ def main():
                     else:
                         ax.set_title(f"{params_names_l[idim]} = {params_max[idim]:.2f}", fontsize=11)
                     ax.set_xlim(xmin[idim], xmax[idim])
+                    ax.set_ylim(bottom=0)
                     if params_islog[idim]:
                         ax.set_xscale("log")
                     if params_names[idim] == "sigma_m [%]":
