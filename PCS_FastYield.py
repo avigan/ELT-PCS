@@ -54,7 +54,7 @@ def main():
     # ---------------------------
     # Parameters
     # ---------------------------
-    PCS_CODE_VERSION = "PCS_FastYield_v1.0"
+    PCS_CODE_VERSION = "PCS_FastYield_v2.0_window_average"
     dtype            = np.float32
 
     # --- Instrument specs (fixed) ---
@@ -303,25 +303,21 @@ def main():
         # Resolution for the raw models
         R_model          = R0_min
 
-    # --- Detector assignment as a function of wavelength ---
-    if detector.startswith("constant_"):
-        detector_l0 = np.full(N_l0, detector.replace("constant_", "", 1))
-    elif detector == "PCS_visNIR_conservative":
-        detector_l0 = np.where(l0 < 0.80, "VIS_CCD", "H4RG")
-    elif detector == "PCS_low_noise_visNIR":
-        detector_l0 = np.where(l0 < 0.80, "EMCCD", "H4RG")
-    elif detector == "PCS_NIR_APD_optimistic":
-        detector_l0 = np.where(l0 < 0.80, "EMCCD", "SAPHIRA")
-    else:
-        raise ValueError("detector must be 'constant_H4RG', 'PCS_visNIR_conservative', 'PCS_low_noise_visNIR', or 'PCS_NIR_APD_optimistic'.")
-    spec_dict    = {name: get_detector_specs(name) for name in np.unique(detector_l0)}
-    RON0         = np.array([spec_dict[d]["RON0"]                    for d in detector_l0], dtype=dtype)
-    RON_lim      = np.array([spec_dict[d]["RON_lim"]                 for d in detector_l0], dtype=dtype)
-    DC0          = np.array([spec_dict[d]["DC0"]                     for d in detector_l0], dtype=dtype)
-    saturation_e = np.array([spec_dict[d]["saturation_e"]            for d in detector_l0], dtype=dtype)
-    min_DIT      = np.array([spec_dict[d]["min_DIT"]                 for d in detector_l0], dtype=dtype)
-    max_DIT      = np.array([spec_dict[d]["max_DIT"]                 for d in detector_l0], dtype=dtype)
-    is_UTR       = np.array([spec_dict[d]["family"] == "HgCdTe_HxRG" for d in detector_l0], dtype=bool)
+    # --- Effective detector properties over each (l0, Dl) window ---
+    # Mean read-noise *variances* and dark-current rates by spectral coverage.
+    # If the window crosses 0.80 um, use conservative saturation/DIT bounds
+    # and do not mix distinct detector readout modes into a fictitious UTR mode.
+    detector_specs = fyh.average_pcs_detector_specs(l0=l0, Dl=Dl, detector=detector, dtype=dtype)
+    RON0         = detector_specs["RON0"]         # (l0, Dl) [e-/px/read]
+    RON_lim      = detector_specs["RON_lim"]      # (l0, Dl) [e-/px]
+    DC0          = detector_specs["DC0"]          # (l0, Dl) [e-/px/mn]
+    saturation_e = detector_specs["saturation_e"] # (l0, Dl) [e-/px]
+    min_DIT      = detector_specs["min_DIT"]      # (l0, Dl) [mn]
+    max_DIT      = detector_specs["max_DIT"]      # (l0, Dl) [mn]
+    is_UTR       = detector_specs["is_UTR"]       # (l0, Dl)
+    detector_l0  = detector_specs["detector_l0"]  # descriptive central-wavelength family, for plots only
+    if np.any(detector_specs["mixed"]):
+        print(f"WARNING: {np.count_nonzero(detector_specs['mixed'])} PCS windows span the 0.80 um detector boundary; using an effective detector approximation.")
 
     # --- Pixel scales (assuming Nyquist sampling) ---
     l0D          = l0*1e-6 / D * 1000*rad2arcsec  # lambda/D [mas/(lambda/D)]
@@ -374,7 +370,7 @@ def main():
     meta = dict(code_version=PCS_CODE_VERSION, dtype=str(dtype),
 
                 # instrument / telescope
-                instru=instru, D=D, S=S, N_mirror=N_mirror, trans_dust=trans_dust, detector=detector, detector_l0=detector_l0,
+                instru=instru, D=D, S=S, N_mirror=N_mirror, trans_dust=trans_dust, detector=detector, detector_l0=detector_l0, detector_averaging="spectral_fraction_v1", psf_averaging="Gauss_Legendre_12_flat_edges_v1",
 
                 # detector numeric specs that affect DIT/noise/products
                 RON0=RON0, RON_lim=RON_lim, DC0=DC0, saturation_e=saturation_e, min_DIT=min_DIT, max_DIT=max_DIT,
@@ -448,7 +444,7 @@ def main():
             print(f"\nNew FastYield ELT/{instru} calculations (missing files).\n")
 
         #
-        # PSF data (PSF profile, fraction core and coronagraph transmission) preparations (l0, r_WFE, IWA, mag_star, sep)
+        # PSF products averaged over (l0, Dl), retaining r_WFE, IWA, WFS magnitude and separation
         #
 
         # PSF_profile_density (no coronagraph) = mean surface-brightness density in each annular bin divided by the total flux (as function of angular separation)
@@ -500,76 +496,56 @@ def main():
         N_mag_star = len(mag_star)
         N_sep      = len(separation)
 
-        # Temporary PSF memmaps
-        PSF_profile_5D     = create_memmap_with_log(PSF_profile_5D_tmp_path,     shape=(N_l0, N_r_WFE, N_IWA, N_mag_star, N_sep), dtype=dtype, mode="w+")
-        fraction_core_5D   = create_memmap_with_log(fraction_core_5D_tmp_path,   shape=(N_l0, N_r_WFE, N_IWA, N_mag_star, N_sep), dtype=dtype, mode="w+")
-        PSF_profile_max_4D = create_memmap_with_log(PSF_profile_max_4D_tmp_path, shape=(N_l0, N_r_WFE, N_IWA, N_mag_star),        dtype=dtype, mode="w+",)
+        # --- Spectrally averaged PSF products for each (l0, Dl) window ---
+        # The raw FITS response depends on wavelength, r_WFE, IWA, WFS magnitude
+        # and angular separation. Average at fixed (r_WFE, IWA, mag, separation),
+        # *before* interpolating to each individual planet's WFS magnitude.
+        # Spatial pixel size and photometric aperture remain defined at l0.
+        shape_psf = (N_l0, N_Dl, N_r_WFE, N_IWA, N_mag_star, N_sep)
+        PSF_profile_5D     = create_memmap_with_log(PSF_profile_5D_tmp_path,     shape=shape_psf, dtype=dtype, mode="w+")
+        fraction_core_5D   = create_memmap_with_log(fraction_core_5D_tmp_path,   shape=shape_psf, dtype=dtype, mode="w+")
+        PSF_profile_max_4D = create_memmap_with_log(PSF_profile_max_4D_tmp_path, shape=shape_psf[:-1], dtype=dtype, mode="w+")
 
-        # Build interpolators once
-        eps_pos  = np.finfo(dtype).tiny
-        eps01    = 1e-32
-        safe_pos = lambda x: np.clip(x, eps_pos, None)
-        safe01   = lambda x: np.clip(x, eps01, 1 - eps01)
-        log_interp_psf      = RegularGridInterpolator((wave0, r_WFE0, IWA0, mag_star0, separation0), np.log(safe_pos(PSF_profile_density0_5D)), bounds_error=True)
-        logit_interp_core   = RegularGridInterpolator((wave0, r_WFE0, IWA0, mag_star0, separation0), logit(safe01(fraction_core0_5D)),          bounds_error=True)
-        if coronagraph is not None:
-            logit_interp_rt = RegularGridInterpolator((wave0, r_WFE0, IWA0, mag_star0, separation0), logit(safe01(radial_transmission0_5D)),    bounds_error=True)
-        else:
-            logit_interp_rt = None
+        eps_pos = np.finfo(dtype).tiny
+        # Log interpolation of positive stellar halo density; logit interpolation
+        # of the two bounded flux fractions, retaining the original FITS convention.
+        eps01   = 1e-12
+        safe01  = lambda x: np.clip(x, eps01, 1.0 - eps01)
+        interp_psf  = RegularGridInterpolator(axes_psf, np.log(np.clip(PSF_profile_density0_5D, eps_pos, None)), bounds_error=True)
+        interp_core = RegularGridInterpolator(axes_psf, logit(safe01(fraction_core0_5D)), bounds_error=True)
+        interp_rt   = RegularGridInterpolator(axes_psf, logit(safe01(radial_transmission0_5D)), bounds_error=True) if coronagraph is not None else None
+        if not np.isclose(separation[0], 0.0):
+            raise ValueError("PCS PSF separation axis must start at zero for stellar coronagraphic transmission.")
 
-        # Build the temporary PSF memmaps by chunks along l0
-        l0_chunk = max(1, min(chunksize, N_l0))
-        for j0 in tqdm(range(0, N_l0, l0_chunk), desc="Building temporary PSF memmaps"):
-            j1           = min(j0 + l0_chunk, N_l0)
-            l0_chunk_arr = l0[j0:j1]
-            pts          = np.stack(np.meshgrid(l0_chunk_arr, r_WFE, IWA, mag_star, separation, indexing="ij"), axis=-1)
-
-            # Interpolating over current grid
-            PSF_profile_density_blk     = np.exp(log_interp_psf(pts))
-            fraction_core_blk           = expit(logit_interp_core(pts))
-            if coronagraph is not None:
-                radial_transmission_blk = expit(logit_interp_rt(pts))
-            else:
-                radial_transmission_blk = None
-
-            # Sanity check of the values
-            if (np.any(~np.isfinite(PSF_profile_density_blk)) or np.any(~np.isfinite(fraction_core_blk)) or (coronagraph is not None and np.any(~np.isfinite(radial_transmission_blk)))):
-                raise KeyError("The PSF data should only have finite values!")
-
-            # Converting flux density in fraction of flux inside the FOV per spaxel for a bin at l0, r_WFE, IWA, mag_star as function of separation
-            PSF_profile_blk = PSF_profile_density_blk * pxscales[j0:j1, None, None, None, None]**2 # [star flux fraction/px]
-
-            # Star transmission throught coronagraph, given at sep = 0, on-axis, assuming that the coronagraph is perfectly align with the star
-            # star_transmission = total star flux through coronagraph / total star flux
-            if coronagraph is not None:
-                i_sep0 = 0
-                if separation[i_sep0] != 0.0:
-                    raise KeyError("The first value of 'separation' should be 0.")
-                star_transmission_blk = radial_transmission_blk[..., i_sep0] # (l0c, r_WFE, IWA, mag_star)
-                # Star PSF profile throught the coronagraph
-                PSF_profile_blk      *= star_transmission_blk[..., None]     # (l0c, r_WFE, IWA, mag_star, sep)
-                # Fraction core signal (for the planet, inside the FWHM) through the coronagraph
-                fraction_core_blk    *= radial_transmission_blk              # (l0c, r_WFE, IWA, mag_star, sep)
-
-            PSF_profile_5D[j0:j1]   = PSF_profile_blk.astype(dtype,   copy=False)
-            fraction_core_5D[j0:j1] = fraction_core_blk.astype(dtype, copy=False)
-
-            # PSF_max (brightest pixels in the PSF) [max star flux fraction/px] in order to compute the DIT length to reach saturation
-            PSF_profile_max_4D[j0:j1] = np.max(PSF_profile_blk, axis=-1).astype(dtype, copy=False)
-
-            # Free block temporaries immediately
-            del pts
-            del PSF_profile_density_blk
-            del fraction_core_blk
-            del PSF_profile_blk
-            if radial_transmission_blk is not None:
-                del radial_transmission_blk
-                del star_transmission_blk
-            gc.collect()
-
-        # PSF_profile_5D(l0, r_WFE, IWA, mag_star, separation)   = [star flux fraction/px]     = star flux per px divided by the total star flux          (as function of angular separation)
-        # fraction_core_5D(l0, r_WFE, IWA, mag_star, separation) = [planet flux fraction/FWHM] = planet flux inside FWHM divided by the total planet flux (constant with separation if no coronagraph, or for different angular separation from the coronagraph)
-        # PSF_profile_max_4D(l0, r_WFE, IWA, mag_star)           = [max star flux fraction/px] = max star flux per px divided by the total star flux      (given at the brightest position)
+        wave_nodes, node_weights = fyh.spectral_window_quadrature(l0=l0, Dl=Dl, n_nodes=12)
+        if np.any((wave_nodes < wave0[0]) | (wave_nodes > wave0[-1])):
+            print("WARNING: some PCS spectral windows extend outside the PSF wavelength coverage; edge PSF values are held constant.")
+        # Reuse the non-chromatic Cartesian grid at all quadrature nodes.
+        ww, ii, mm, ss = np.meshgrid(r_WFE, IWA, mag_star, separation, indexing="ij")
+        grid_shape = ww.shape
+        rest_pts   = np.column_stack((ww.ravel(), ii.ravel(), mm.ravel(), ss.ravel()))
+        for j in tqdm(range(N_l0), desc="Band-averaging PCS PSF products"):
+            for k in range(N_Dl):
+                profile_avg = np.zeros(grid_shape, dtype=np.float64)
+                core_avg    = np.zeros(grid_shape, dtype=np.float64)
+                for wn, wt in zip(wave_nodes[j, k], node_weights[j, k]):
+                    wavelength = np.clip(wn, wave0[0], wave0[-1])
+                    pts        = np.column_stack((np.full(len(rest_pts), wavelength), rest_pts))
+                    density    = np.exp(interp_psf(pts)).reshape(grid_shape)
+                    core       = expit(interp_core(pts)).reshape(grid_shape)
+                    if coronagraph is not None:
+                        radial = expit(interp_rt(pts)).reshape(grid_shape)
+                        profile_avg += wt * density * radial[..., :1] # on-axis star transmission
+                        core_avg    += wt * core * radial            # off-axis planet transmission
+                    else:
+                        profile_avg += wt * density
+                        core_avg    += wt * core
+                profile_avg *= pxscales[j]**2 # fixed spatial pixel at l0, not at every quadrature node
+                PSF_profile_5D[j, k]     = profile_avg.astype(dtype)
+                fraction_core_5D[j, k]   = core_avg.astype(dtype)
+                PSF_profile_max_4D[j, k] = np.max(profile_avg, axis=-1).astype(dtype)
+        # Arrays have shapes (l0, Dl, r_WFE, IWA, mag_star[, separation]).
+        # The same effective PSF is used for all IFU resolving powers R.
 
         PSF_profile_5D.flush()
         fraction_core_5D.flush()
@@ -580,7 +556,7 @@ def main():
         del PSF_profile_density0_5D, fraction_core0_5D
         if radial_transmission0_5D is not None:
             del radial_transmission0_5D
-        del log_interp_psf, logit_interp_core, logit_interp_rt
+        del interp_psf, interp_core, interp_rt
         del PSF_profile_5D, fraction_core_5D, PSF_profile_max_4D
         gc.collect()
 
