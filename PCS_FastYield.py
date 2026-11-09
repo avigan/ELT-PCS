@@ -9,7 +9,7 @@ os.environ["NUMBA_NUM_THREADS"]    = "1"
 # import fastyield.config as config
 # config.dpi_fig = 72
 from fastyield.config import rad2arcsec, h, c, R0_min, R0_max, lmin_bands, lmax_bands, get_sim_data_path, dpi_fig
-from fastyield.get_specs import load_tell_trans, get_detector_specs
+from fastyield.get_specs import load_tell_trans
 from fastyield.FastYield import load_planet_table, get_mask_planet_type, yield_population_plot, yield_heatmap_ELT
 from fastyield.FastYield_helpers import print_simulation_summary, make_suffix, write_meta, memmap_nbytes, format_nbytes, create_memmap_with_log, warmup_signal_noise_numba, get_valid_IFU_windows, spectral_window_quadrature, average_detector_specs
 from fastyield.spectrum import get_wavelength_axis_constant_R, Spectrum, load_vega_spectrum, get_spectrum_contribution_name_model, get_wave_K, get_counts_from_density
