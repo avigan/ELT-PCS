@@ -58,64 +58,6 @@ def load_instrument_concept(name, concept_dir=None):
 
 # --- General helpers ---
 
-def spectral_window_quadrature(l0, Dl, n_nodes=12):
-    """Gauss-Legendre points and weights normalized to one in each (l0, Dl) window.
-
-    The PSF wavelength integral is uniform, not weighted by the target spectrum.
-    The caller may clamp wavelengths to the PSF library boundaries.
-    """
-    nodes, weights = np.polynomial.legendre.leggauss(n_nodes)
-    wavelengths = np.asarray(l0)[:, None, None] + 0.5*np.asarray(Dl)[None, :, None]*nodes
-    return wavelengths, np.broadcast_to(weights/2.0, wavelengths.shape)
-
-
-
-def average_pcs_detector_specs(l0, Dl, detector, dtype=np.float32):
-    """Effective PCS detector specifications for each spectral window (l0, Dl).
-
-    Read-noise variances and dark-current rates use wavelength-coverage weights.
-    Saturation/DIT bounds use the conservative intersection of active families.
-    This is not a physically exact multi-channel detector model.
-    """
-    from fastyield.get_specs import get_detector_specs
-
-    lo = np.asarray(l0)[:, None] - np.asarray(Dl)[None, :]/2
-    hi = np.asarray(l0)[:, None] + np.asarray(Dl)[None, :]/2
-    if np.any(hi <= lo):
-        raise ValueError("Spectral-window widths must be strictly positive.")
-    if detector.startswith("constant_"):
-        names = [detector[len("constant_"):]]
-        fractions = np.ones((1,) + lo.shape)
-        detector_l0 = np.full(len(l0), names[0])
-    else:
-        families = {"PCS_visNIR_conservative": ("VIS_CCD", "H4RG"), "PCS_low_noise_visNIR": ("EMCCD", "H4RG"), "PCS_NIR_APD_optimistic": ("EMCCD", "SAPHIRA")}
-        if detector not in families:
-            raise ValueError(f"Unknown PCS detector prescription: {detector}")
-        names = list(families[detector])
-        f_vis = np.clip((np.minimum(hi, 0.80) - lo)/(hi - lo), 0.0, 1.0)
-        fractions = np.stack((f_vis, 1.0 - f_vis))
-        detector_l0 = np.where(np.asarray(l0) < 0.80, names[0], names[1])
-    specs = [get_detector_specs(n) for n in names]
-    active = fractions > 1e-12
-    mixed = np.count_nonzero(active, axis=0) > 1
-    def avg(key, squared=False):
-        vals = np.asarray([s[key] for s in specs], dtype=float)
-        x = np.tensordot(vals**2 if squared else vals, fractions, axes=(0, 0))
-        return np.sqrt(x) if squared else x
-    def conservative(key, fn):
-        vals = np.asarray([s[key] for s in specs], dtype=float)
-        return fn(np.where(active, vals[:, None, None], np.nan), axis=0)
-    saturation = conservative("saturation_e", np.nanmin)
-    min_dit = conservative("min_DIT", np.nanmax)
-    max_dit = conservative("max_DIT", np.nanmin)
-    if np.any(min_dit > max_dit):
-        raise ValueError("Incompatible detector DIT constraints in a PCS spectral window")
-    utr = np.asarray([s["family"] == "HgCdTe_HxRG" for s in specs], dtype=bool)
-    is_utr = np.all(~active | utr[:, None, None], axis=0) & ~mixed
-    return dict(RON0=avg("RON0", squared=True).astype(dtype), RON_lim=avg("RON_lim", squared=True).astype(dtype), DC0=avg("DC0").astype(dtype), saturation_e=saturation.astype(dtype), min_DIT=min_dit.astype(dtype), max_DIT=max_dit.astype(dtype), is_UTR=is_utr, mixed=mixed, detector_l0=detector_l0)
-
-
-
 def interp_mag_flat_4d(mag_grid, y_4d, mag, dtype=None):
     """
     Linear interpolation along the stellar magnitude axis.

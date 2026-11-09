@@ -9,9 +9,9 @@ os.environ["NUMBA_NUM_THREADS"]    = "1"
 # import fastyield.config as config
 # config.dpi_fig = 72
 from fastyield.config import rad2arcsec, h, c, R0_min, R0_max, lmin_bands, lmax_bands, get_sim_data_path, dpi_fig
-from fastyield.get_specs import load_tell_trans
+from fastyield.get_specs import load_tell_trans, get_detector_specs
 from fastyield.FastYield import load_planet_table, get_mask_planet_type, yield_population_plot, yield_heatmap_ELT
-from fastyield.FastYield_helpers import print_simulation_summary, make_suffix, write_meta, memmap_nbytes, format_nbytes, create_memmap_with_log, warmup_signal_noise_numba, get_valid_IFU_windows
+from fastyield.FastYield_helpers import print_simulation_summary, make_suffix, write_meta, memmap_nbytes, format_nbytes, create_memmap_with_log, warmup_signal_noise_numba, get_valid_IFU_windows, spectral_window_quadrature, average_detector_specs
 from fastyield.spectrum import get_wavelength_axis_constant_R, Spectrum, load_vega_spectrum, get_spectrum_contribution_name_model, get_wave_K, get_counts_from_density
 
 # import PCS package helpers module
@@ -307,7 +307,7 @@ def main():
     # Mean read-noise *variances* and dark-current rates by spectral coverage.
     # If the window crosses 0.80 um, use conservative saturation/DIT bounds
     # and do not mix distinct detector readout modes into a fictitious UTR mode.
-    detector_specs = fyh.average_pcs_detector_specs(l0=l0, Dl=Dl, detector=detector, dtype=dtype)
+    detector_specs = average_detector_specs(l0=l0, Dl=Dl, detector=detector, dtype=dtype)
     RON0           = detector_specs["RON0"]         # (l0, Dl) [e-/px/read]
     RON_lim        = detector_specs["RON_lim"]      # (l0, Dl) [e-/px]
     DC0            = detector_specs["DC0"]          # (l0, Dl) [e-/px/mn]
@@ -517,7 +517,7 @@ def main():
         if not np.isclose(separation[0], 0.0):
             raise ValueError("PCS PSF separation axis must start at zero for stellar coronagraphic transmission.")
 
-        wave_nodes, node_weights = fyh.spectral_window_quadrature(l0=l0, Dl=Dl, n_nodes=12)
+        wave_nodes, node_weights = spectral_window_quadrature(l0=l0, Dl=Dl, n_nodes=12)
         if np.any((wave_nodes < wave0[0]) | (wave_nodes > wave0[-1])):
             print("WARNING: some PCS spectral windows extend outside the PSF wavelength coverage; edge PSF values are held constant.")
         # Reuse the non-chromatic Cartesian grid at all quadrature nodes.
