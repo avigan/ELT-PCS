@@ -71,7 +71,7 @@ def resolve_summary_dir(path):
     raise FileNotFoundError(f"SUMMARY input not found: {path}")
 
 summary_dir = resolve_summary_dir(SUMMARY_INPUT)
-output_dir  = get_sim_data_path() / instru / "PSF_inputs"
+output_dir  = get_sim_data_path() / "ELT" / instru / "PSF_inputs"
 output_dir.mkdir(parents=True, exist_ok=True)
 
 # Output ranges: intentionally kept identical to the ranges currently hard-coded
@@ -84,7 +84,7 @@ sep_max                    = 1_000          # [mas]
 
 N_r_WFE_base = 20
 N_IWA_base   = 20
-N_sep_log    = 1_000
+N_sep_log    = 400
 
 # SUMMARY wavelength axis is implicit in README.md.
 raw_wave_min  = 0.5 # [um]
