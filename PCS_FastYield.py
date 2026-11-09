@@ -9,7 +9,7 @@ os.environ["NUMBA_NUM_THREADS"]    = "1"
 # import fastyield.config as config
 # config.dpi_fig = 72
 from fastyield.config import rad2arcsec, h, c, R0_min, R0_max, lmin_bands, lmax_bands, get_sim_data_path, dpi_fig
-from fastyield.get_specs import load_tell_trans, get_detector_specs
+from fastyield.get_specs import load_tell_trans
 from fastyield.FastYield import load_planet_table, get_mask_planet_type, yield_population_plot, yield_heatmap_ELT
 from fastyield.FastYield_helpers import print_simulation_summary, make_suffix, write_meta, memmap_nbytes, format_nbytes, create_memmap_with_log, warmup_signal_noise_numba, get_valid_IFU_windows
 from fastyield.spectrum import get_wavelength_axis_constant_R, Spectrum, load_vega_spectrum, get_spectrum_contribution_name_model, get_wave_K, get_counts_from_density
@@ -54,7 +54,7 @@ def main():
     # ---------------------------
     # Parameters
     # ---------------------------
-    PCS_CODE_VERSION = "PCS_FastYield_v2.0_window_average"
+    PCS_CODE_VERSION = "PCS_FastYield_v2.0"
     dtype            = np.float32
 
     # --- Instrument specs (fixed) ---
@@ -308,14 +308,14 @@ def main():
     # If the window crosses 0.80 um, use conservative saturation/DIT bounds
     # and do not mix distinct detector readout modes into a fictitious UTR mode.
     detector_specs = fyh.average_pcs_detector_specs(l0=l0, Dl=Dl, detector=detector, dtype=dtype)
-    RON0         = detector_specs["RON0"]         # (l0, Dl) [e-/px/read]
-    RON_lim      = detector_specs["RON_lim"]      # (l0, Dl) [e-/px]
-    DC0          = detector_specs["DC0"]          # (l0, Dl) [e-/px/mn]
-    saturation_e = detector_specs["saturation_e"] # (l0, Dl) [e-/px]
-    min_DIT      = detector_specs["min_DIT"]      # (l0, Dl) [mn]
-    max_DIT      = detector_specs["max_DIT"]      # (l0, Dl) [mn]
-    is_UTR       = detector_specs["is_UTR"]       # (l0, Dl)
-    detector_l0  = detector_specs["detector_l0"]  # descriptive central-wavelength family, for plots only
+    RON0           = detector_specs["RON0"]         # (l0, Dl) [e-/px/read]
+    RON_lim        = detector_specs["RON_lim"]      # (l0, Dl) [e-/px]
+    DC0            = detector_specs["DC0"]          # (l0, Dl) [e-/px/mn]
+    saturation_e   = detector_specs["saturation_e"] # (l0, Dl) [e-/px]
+    min_DIT        = detector_specs["min_DIT"]      # (l0, Dl) [mn]
+    max_DIT        = detector_specs["max_DIT"]      # (l0, Dl) [mn]
+    is_UTR         = detector_specs["is_UTR"]       # (l0, Dl)
+    detector_l0    = detector_specs["detector_l0"]  # descriptive central-wavelength family, for plots only
     if np.any(detector_specs["mixed"]):
         print(f"WARNING: {np.count_nonzero(detector_specs['mixed'])} PCS windows span the 0.80 um detector boundary; using an effective detector approximation.")
 
@@ -370,7 +370,7 @@ def main():
     meta = dict(code_version=PCS_CODE_VERSION, dtype=str(dtype),
 
                 # instrument / telescope
-                instru=instru, D=D, S=S, N_mirror=N_mirror, trans_dust=trans_dust, detector=detector, detector_l0=detector_l0, detector_averaging="spectral_fraction_v1", psf_averaging="Gauss_Legendre_12_flat_edges_v1",
+                instru=instru, D=D, S=S, N_mirror=N_mirror, trans_dust=trans_dust, detector=detector, detector_l0=detector_l0,
 
                 # detector numeric specs that affect DIT/noise/products
                 RON0=RON0, RON_lim=RON_lim, DC0=DC0, saturation_e=saturation_e, min_DIT=min_DIT, max_DIT=max_DIT,
